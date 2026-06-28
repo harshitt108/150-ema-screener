@@ -1,0 +1,125 @@
+INDICES = {
+    "NIFTY 50": [
+        "RELIANCE", "TCS", "HDFCBANK", "BHARTIARTL", "ICICIBANK",
+        "INFOSYS", "SBIN", "HINDUNILVR", "ITC", "LT",
+        "KOTAKBANK", "HCLTECH", "AXISBANK", "BAJFINANCE", "ASIANPAINT",
+        "MARUTI", "SUNPHARMA", "TITAN", "ULTRACEMCO", "WIPRO",
+        "NESTLEIND", "POWERGRID", "NTPC", "TECHM", "INDUSINDBK",
+        "BAJAJFINSV", "ONGC", "JSWSTEEL", "TATAMOTORS", "ADANIENT",
+        "HDFCLIFE", "SBILIFE", "COALINDIA", "DIVISLAB", "BRITANNIA",
+        "BAJAJ-AUTO", "TATACONSUM", "GRASIM", "CIPLA", "ADANIPORTS",
+        "DRREDDY", "M&M", "EICHERMOT", "APOLLOHOSP", "BPCL",
+        "HEROMOTOCO", "HINDALCO", "SHRIRAMFIN", "TATASTEEL", "BEL"
+    ],
+    "NIFTY NEXT 50": [
+        "ADANIGREEN", "ADANIPOWER", "ADANITRANS", "AMBUJACEM", "ABB",
+        "BANKBARODA", "BERGEPAINT", "BHEL", "BOSCHLTD", "CHOLAFIN",
+        "COLPAL", "DABUR", "DLF", "GODREJCP", "GODREJPROP",
+        "HAL", "HAVELLS", "ICICIPRULI", "INDUSTOWER", "INDIGO",
+        "IOC", "IRCTC", "JINDALSTEL", "LUPIN", "MARICO",
+        "MUTHOOTFIN", "NAUKRI", "NHPC", "OFSS", "PETRONET",
+        "PFC", "PIIND", "RECLTD", "SAIL", "SIEMENS",
+        "SRF", "TRENT", "TVSMOTOR", "UBL", "UNIONBANK",
+        "UPL", "VEDL", "VOLTAS", "ZYDUSLIFE", "ZOMATO",
+        "PAYTM", "POLICYBZR", "DMART", "PIDILITIND", "TORNTPHARM"
+    ],
+    "NIFTY BANK": [
+        "HDFCBANK", "ICICIBANK", "KOTAKBANK", "AXISBANK", "SBIN",
+        "INDUSINDBK", "BANKBARODA", "FEDERALBNK", "IDFCFIRSTB", "BANDHANBNK",
+        "PNB", "AUBANK"
+    ],
+    "NIFTY IT": [
+        "TCS", "INFOSYS", "HCLTECH", "WIPRO", "TECHM",
+        "LTIM", "PERSISTENT", "COFORGE", "MPHASIS", "OFSS"
+    ],
+    "NIFTY AUTO": [
+        "MARUTI", "TATAMOTORS", "M&M", "BAJAJ-AUTO", "EICHERMOT",
+        "HEROMOTOCO", "TVSMOTOR", "ASHOKLEY", "MOTHERSON", "BALKRISIND",
+        "BHARATFORG", "EXIDEIND", "AMARAJABAT", "MRF", "BOSCHLTD"
+    ],
+    "NIFTY PHARMA": [
+        "SUNPHARMA", "DRREDDY", "CIPLA", "DIVISLAB", "LUPIN",
+        "AUROPHARMA", "TORNTPHARM", "ZYDUSLIFE", "ALKEM", "IPCALAB",
+        "ABBOTINDIA", "GLENMARK", "GRANULES", "LAURUSLABS", "NATCOPHARMA"
+    ],
+    "NIFTY FMCG": [
+        "HINDUNILVR", "ITC", "NESTLEIND", "BRITANNIA", "DABUR",
+        "MARICO", "GODREJCP", "COLPAL", "TATACONSUM", "UBL",
+        "EMAMILTD", "RADICO", "VBL", "MCDOWELL-N", "PGHH"
+    ],
+    "NIFTY METAL": [
+        "JSWSTEEL", "TATASTEEL", "HINDALCO", "SAIL", "VEDL",
+        "NMDC", "COALINDIA", "JINDALSTEL", "NATIONALUM", "WELCORP",
+        "APL", "RATNAMANI", "APLAPOLLO", "JINDALSAW", "MOIL"
+    ],
+    "NIFTY ENERGY": [
+        "RELIANCE", "ONGC", "NTPC", "POWERGRID", "BPCL",
+        "IOC", "GAIL", "PETRONET", "NHPC", "TATAPOWER",
+        "ADANIGREEN", "ADANIPOWER", "TORNTPOWER", "CESC", "SJVN"
+    ],
+    "NIFTY REALTY": [
+        "DLF", "GODREJPROP", "PRESTIGE", "LODHA", "OBEROIRLTY",
+        "SOBHA", "MAHLIFE", "BRIGADE", "PHOENIXLTD", "SUNTECK",
+        "ANANTRAJ", "KOLTEPATIL"
+    ],
+    "NIFTY MIDCAP 50": [
+        "ABCAPITAL", "ALKEM", "ASHOKLEY", "ASTRAL", "AUROPHARMA",
+        "AUBANK", "BALKRISIND", "BANDHANBNK", "BHARATFORG", "CAMS",
+        "CANFINHOME", "CDSL", "CHOLAFIN", "COFORGE", "CROMPTON",
+        "CUB", "DEEPAKNTR", "DIXON", "DMART", "FEDERALBNK",
+        "GLENMARK", "GMRAIRPORT", "GRANULES", "HDFCAMC", "HINDPETRO",
+        "IDFCFIRSTB", "INDHOTEL", "IPCA", "JKCEMENT", "JUBLFOOD",
+        "KPITTECH", "LALPATHLAB", "LAURUSLABS", "LICHSGFIN", "LTIM",
+        "LTTS", "MFSL", "MPHASIS", "MRF", "NATIONALUM",
+        "NAVINFLUOR", "PERSISTENT", "PIIND", "POLICYBZR", "RAMCOCEM",
+        "RBLBANK", "SBICARD", "SUPREMEIND", "TRENT", "TVSMOTOR"
+    ],
+    "NIFTY SMALLCAP 50": [
+        "AAVAS", "ACE", "AHLUCONT", "AJANTPHARM", "APTUS",
+        "ARVINDFASN", "ASTRAZEN", "BSOFT", "CAMPUS", "CARYSIL",
+        "CLEAN", "DELHIVERY", "EIDPARRY", "ELGIEQUIP", "EPIGRAL",
+        "GESHIP", "GPPL", "GREENPANEL", "GUJGAS", "HAPPSTMNDS",
+        "HOMEFIRST", "IDEAFORGE", "INDIASHLTR", "INNOVACAP", "JBMA",
+        "JINDALSAW", "KALYANKJIL", "KMFIL", "KPIGREEN", "KRBL",
+        "LATENTVIEW", "LEADCORP", "LXCHEM", "MAHSEAMLES", "MEDANTA",
+        "METROBRAND", "METROPOLIS", "MSTOCK", "NUVAMA", "PPLPHARMA",
+        "RATNAMANI", "ROUTE", "SAFARI", "SHYAMMETL", "SIGNATURE",
+        "SWSOLAR", "TANLA", "TARSONS", "TITAGARH", "WESTLIFE"
+    ],
+}
+
+# Build NIFTY 100 = NIFTY 50 + NIFTY NEXT 50
+INDICES["NIFTY 100"] = list(dict.fromkeys(INDICES["NIFTY 50"] + INDICES["NIFTY NEXT 50"]))
+
+# Build NIFTY 200
+INDICES["NIFTY 200"] = list(dict.fromkeys(
+    INDICES["NIFTY 100"] + INDICES["NIFTY MIDCAP 50"]
+))
+
+# Build NIFTY 500 (approximate with all available)
+INDICES["NIFTY 500"] = list(dict.fromkeys(
+    INDICES["NIFTY 200"] + INDICES["NIFTY SMALLCAP 50"] +
+    INDICES["NIFTY PHARMA"] + INDICES["NIFTY AUTO"] +
+    INDICES["NIFTY IT"] + INDICES["NIFTY BANK"] +
+    INDICES["NIFTY FMCG"] + INDICES["NIFTY METAL"] +
+    INDICES["NIFTY ENERGY"] + INDICES["NIFTY REALTY"]
+))
+
+# All NSE Stocks = NIFTY 500 for MVP
+INDICES["All NSE Stocks"] = INDICES["NIFTY 500"]
+
+
+def get_symbols(index_names: list[str]) -> list[str]:
+    """Return deduplicated NSE symbols for given index names."""
+    symbols = []
+    for name in index_names:
+        symbols.extend(INDICES.get(name, []))
+    return list(dict.fromkeys(symbols))
+
+
+def get_yahoo_symbol(nse_symbol: str) -> str:
+    """Convert NSE symbol to Yahoo Finance format."""
+    return f"{nse_symbol}.NS"
+
+
+INDEX_NAMES = list(INDICES.keys())
