@@ -23,3 +23,14 @@ Thumbs.db
 # Env
 .env
 *.env
+
+# Personal / sensitive data — never commit (repo is PUBLIC)
+*.xlsx
+*.xls
+*.csv
+*.db
+*.sqlite
+*.sqlite3
+
+# Backups / junk
+*.bak

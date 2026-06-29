@@ -14,8 +14,6 @@ INTERVAL_MAP = {
     "15m":  "15m",
     "30m":  "30m",
     "1h":   "60m",
-    "2h":   "90m",   # Yahoo has no 2h interval; 90m is the closest supported option
-    "4h":   "1d",    # Yahoo has no 4h interval; fall back to daily
     "1d":   "1d",
     "1wk":  "1wk",
     "1mo":  "1mo",
@@ -24,7 +22,8 @@ INTERVAL_MAP = {
 YAHOO_BASE = "https://query1.finance.yahoo.com/v8/finance/chart"
 
 
-def fetch_ohlcv(symbol: str, interval: str, period: str) -> Optional[pd.DataFrame]:
+def fetch_ohlcv(symbol: str, interval: str, period: str,
+                max_retries: int = 3) -> Optional[pd.DataFrame]:
     yf_interval = INTERVAL_MAP.get(interval, interval)
 
     url = f"{YAHOO_BASE}/{symbol}"
@@ -35,9 +34,26 @@ def fetch_ohlcv(symbol: str, interval: str, period: str) -> Optional[pd.DataFram
         "events": "div,splits",
     }
 
+    # Retry transient failures (rate-limit / server / timeout) with backoff so a
+    # concurrent scan burst doesn't silently drop symbols. A 404 (delisted/bad
+    # symbol) is permanent — don't waste retries on it.
+    resp = None
+    for attempt in range(max_retries):
+        try:
+            resp = SESSION.get(url, params=params, timeout=15)
+        except requests.RequestException:
+            resp = None  # network/timeout — treat as transient
+        if resp is not None:
+            if resp.status_code == 200:
+                break
+            if resp.status_code == 404:
+                return None  # symbol genuinely not found — no point retrying
+        if attempt < max_retries - 1:
+            # 0.5s, 1s, 2s … exponential backoff (jittered by symbol hash)
+            time.sleep(0.5 * (2 ** attempt) + (hash(symbol) % 100) / 1000.0)
+
     try:
-        resp = SESSION.get(url, params=params, timeout=15)
-        if resp.status_code != 200:
+        if resp is None or resp.status_code != 200:
             return None
 
         data = resp.json()
@@ -57,20 +73,28 @@ def fetch_ohlcv(symbol: str, interval: str, period: str) -> Optional[pd.DataFram
         lows = quote.get("low", [])
         volumes = quote.get("volume", [])
 
-        # Handle adjclose
-        adjclose_data = result["indicators"].get("adjclose")
-        if adjclose_data:
-            adj = adjclose_data[0].get("adjclose", closes)
-        else:
-            adj = closes
-
         df = pd.DataFrame({
             "Open": opens,
             "High": highs,
             "Low": lows,
-            "Close": adj,
+            "Close": closes,
             "Volume": volumes,
         }, index=pd.to_datetime(timestamps, unit="s", utc=True))
+
+        # Split/dividend adjustment: Yahoo gives an adjusted close but RAW OHL.
+        # Mixing them makes every candle render red (adj close < raw open) and
+        # distorts the wicks. Scale Open/High/Low by the same per-bar factor
+        # (adjclose / close) so the whole candle is consistently adjusted.
+        adjclose_data = result["indicators"].get("adjclose")
+        if adjclose_data:
+            df["AdjClose"] = adjclose_data[0].get("adjclose", closes)
+            factor = df["AdjClose"] / df["Close"]
+            factor = factor.replace([float("inf"), float("-inf")], 1.0).fillna(1.0)
+            df["Open"]  = df["Open"]  * factor
+            df["High"]  = df["High"]  * factor
+            df["Low"]   = df["Low"]   * factor
+            df["Close"] = df["AdjClose"]
+            df = df.drop(columns=["AdjClose"])
 
         df = df.dropna(subset=["Close"])
         df = df[df["Close"] > 0]

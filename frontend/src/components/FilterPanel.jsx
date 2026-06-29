@@ -15,8 +15,6 @@ const TIMEFRAMES = [
   { value: "15min",   label: "15 min" },
   { value: "30min",   label: "30 min" },
   { value: "1h",      label: "1 Hour" },
-  { value: "2h",      label: "2 Hour (90m)" },
-  { value: "4h",      label: "4 Hour (Daily)" },
   { value: "daily",   label: "Daily" },
   { value: "weekly",  label: "Weekly" },
   { value: "monthly", label: "Monthly" },

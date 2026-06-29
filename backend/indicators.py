@@ -138,11 +138,12 @@ def compute_signals(stock_df: pd.DataFrame, ratio: Optional[pd.Series] = None) -
     ad_bull  = float(ad_s.iloc[-1]) > float(ad_e21.iloc[-1])
     conds["ad_gt_ema"] = _cond("A/D Line > 21 EMA", ad_bull, "Yes" if ad_bull else "No")
 
-    # 10: Aroon — bullish when Aroon Up > 50; show Up value colored by threshold
+    # 10: Aroon Oscillator (Aroon Up − Aroon Down) — bullish when above 0
     au, ad_ = aroon(high, low, 25)
     au_v = float(au.iloc[-1])  if not pd.isna(au.iloc[-1])  else 0.0
     ad_v = float(ad_.iloc[-1]) if not pd.isna(ad_.iloc[-1]) else 0.0
-    conds["aroon_bull"] = _cond("Aroon Up(25)", au_v > 50, f"{au_v:.0f}")
+    aroon_osc = au_v - ad_v
+    conds["aroon_bull"] = _cond("Aroon Osc(25) > 0", aroon_osc > 0, f"{aroon_osc:+.0f}")
 
     # 11–13: Ratio conditions (only when a ratio series is supplied)
     if ratio is not None and len(ratio) >= 20:

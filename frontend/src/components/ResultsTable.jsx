@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { ArrowUpDown, ArrowUp, ArrowDown, ExternalLink, TrendingUp } from 'lucide-react'
-import EmaBadges from './EmaBadges'
+import { EmaGroup, MomentumGroup } from './IndicatorGroups'
 import AddToWatchlist from './AddToWatchlist'
 
 function EmaCondBadge({ signal }) {
@@ -73,7 +73,9 @@ function openTradingView(e, symbol) {
   window.open(`https://www.tradingview.com/chart/?symbol=NSE:${symbol}`, '_blank')
 }
 
-export default function ResultsTable({ results, scanned, onRowClick, watchlist }) {
+export default function ResultsTable({ results, scanned, onRowClick, watchlist, showRatioEmas }) {
+  // Auto-detect ratio data: show the column if ANY row has ratioEmas
+  const hasRatio = showRatioEmas ?? results.some(r => r.ratioEmas)
   const [sort, setSort] = useState({ field: 'distance_abs', dir: 'asc' })
 
   const onSort = (field) => {
@@ -136,7 +138,9 @@ export default function ResultsTable({ results, scanned, onRowClick, watchlist }
               <SortHeader label="Distance" field="distance_abs" sort={sort} onSort={onSort} />
               <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">EMA Signal</th>
               <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Rec.</th>
-              <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap">Price vs EMA</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap">EMA (20/50/150)</th>
+              {hasRatio && <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap">Ratio vs EMA</th>}
+              <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap">Momentum</th>
               <SortHeader label="Vol Ratio" field="volume_ratio" sort={sort} onSort={onSort} />
               <th className="px-3 py-3" />
             </tr>
@@ -169,7 +173,15 @@ export default function ResultsTable({ results, scanned, onRowClick, watchlist }
                   <SignalPill signals={row.signals} />
                 </td>
                 <td className="px-3 py-3">
-                  <EmaBadges panel={row.priceEmas} />
+                  <EmaGroup panel={row.priceEmas} />
+                </td>
+                {hasRatio && (
+                  <td className="px-3 py-3">
+                    <EmaGroup panel={row.ratioEmas} />
+                  </td>
+                )}
+                <td className="px-3 py-3">
+                  <MomentumGroup source={row.signals} />
                 </td>
                 <td className="px-3 py-3">
                   <VolumeBadge ratio={row.volRatio} />

@@ -18,8 +18,6 @@ TIMEFRAME_MAP = {
     "15min":   ("15m", "60d"),
     "30min":   ("30m", "60d"),
     "1h":      ("1h",  "365d"),  # Yahoo supports up to 730d; 365d gives ~2500 bars — fully settles 200 EMA
-    "2h":      ("2h",  "60d"),   # remapped to 90m in data_fetcher (Yahoo has no 2h interval)
-    "4h":      ("4h",  "90d"),   # falls back to 1d in data_fetcher
     "daily":   ("1d",  "2y"),
     "weekly":  ("1wk", "10y"),   # 10y → ~520 bars; MACD(26) needs 161 to settle
     "monthly": ("1mo", "20y"),   # 20y → ~240 bars; fully settles MACD signal line
@@ -27,7 +25,28 @@ TIMEFRAME_MAP = {
 
 
 def calculate_ema(series: pd.Series, period: int) -> pd.Series:
-    return series.ewm(span=period, adjust=False).mean()
+    """Exponential moving average seeded with the SMA of the first `period` values.
+
+    This matches TradingView / Zerodha / most charting platforms, which seed the
+    EMA with a simple moving average rather than the first data point. Pandas'
+    ``ewm(adjust=False)`` instead seeds with price[0], so its early values are
+    dominated by the seed and only converge after ~3-4x the period — which made
+    our "Above/Below 150 EMA" verdicts drift vs. what a trader sees on their chart.
+
+    Values before the seed bar (index ``period-1``) are NaN, exactly like TV.
+    """
+    n = len(series)
+    out = np.full(n, np.nan, dtype="float64")
+    if n < period:
+        return pd.Series(out, index=series.index)
+    vals = series.to_numpy(dtype="float64")
+    alpha = 2.0 / (period + 1.0)
+    prev = vals[:period].mean()          # SMA seed
+    out[period - 1] = prev
+    for i in range(period, n):
+        prev = alpha * vals[i] + (1.0 - alpha) * prev
+        out[i] = prev
+    return pd.Series(out, index=series.index)
 
 
 def calculate_avg_volume(volume: pd.Series, lookback: int = 20) -> float:
@@ -89,7 +108,12 @@ def analyze_stock(
 
     signal = None
 
-    if condition == "near_ema":
+    if condition == "all":
+        # No filtering — return every stock with its position vs the EMA.
+        # Used by the Watchlist to show full data for all watched symbols.
+        signal = "Above EMA" if dist > 0 else "Below EMA"
+
+    elif condition == "near_ema":
         if abs(dist) <= distance_pct:
             signal = "Near EMA"
 

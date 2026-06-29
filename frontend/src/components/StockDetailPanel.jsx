@@ -4,16 +4,35 @@ import CandleChart from './CandleChart'
 import DrawingOverlay from './DrawingOverlay'
 import AddToWatchlist from './AddToWatchlist'
 
-// Fills the flex container, measures real height, passes it to CandleChart
+// Fills the flex container, measures real height, passes it to CandleChart.
+// Waits 230ms before the first measurement so the panel's slide-in animation
+// (200ms) has finished and the container has its final dimensions. After that
+// a ResizeObserver keeps the chart sized correctly on window/panel resize.
 function ChartAutoHeight({ onReady, ...props }) {
-  const ref     = useRef(null)
-  const [h, setH] = useState(500)
+  const ref    = useRef(null)
+  const [h, setH] = useState(0)   // 0 = not yet measured → don't render chart
+
   useEffect(() => {
     if (!ref.current) return
-    const ro = new ResizeObserver(([e]) => setH(Math.floor(e.contentRect.height)))
+
+    const measure = () => {
+      const rect = ref.current?.getBoundingClientRect()
+      if (rect?.height > 0) setH(Math.floor(rect.height))
+    }
+
+    // First measurement after animation completes
+    const t = setTimeout(measure, 230)
+
+    // Keep up with resizes after initial render
+    const ro = new ResizeObserver(([e]) => {
+      const newH = Math.floor(e.contentRect.height)
+      if (newH > 0) setH(newH)
+    })
     ro.observe(ref.current)
-    return () => ro.disconnect()
+
+    return () => { clearTimeout(t); ro.disconnect() }
   }, [])
+
   return (
     <div ref={ref} style={{ width: '100%', height: '100%' }}>
       {h > 0 && <CandleChart {...props} height={h} onReady={onReady} />}
@@ -88,14 +107,18 @@ export default function StockDetailPanel({ stock, timeframe, onClose, onPrev, on
 
   useEffect(() => {
     if (!stock) return
+    // Guard against out-of-order responses when the user arrow-keys through
+    // stocks quickly — ignore any fetch that isn't the latest request.
+    let cancelled = false
     setLoading(true)
     setError(null)
     setChartData(null)
     const bench = encodeURIComponent(stock.benchmark || 'NIFTY 50')
     fetch(`${API_BASE}/api/chart/${stock.symbol}?timeframe=${timeframe}&benchmark=${bench}`)
       .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
-      .then(d => { setChartData(d); setLoading(false) })
-      .catch(e => { setError(String(e)); setLoading(false) })
+      .then(d => { if (!cancelled) { setChartData(d); setLoading(false) } })
+      .catch(e => { if (!cancelled) { setError(String(e)); setLoading(false) } })
+    return () => { cancelled = true }
   }, [stock?.symbol, timeframe, stock?.benchmark])
 
   if (!stock) return null
@@ -209,12 +232,16 @@ export default function StockDetailPanel({ stock, timeframe, onClose, onPrev, on
                 </div>
               )}
               {!loading && !error && chartData && (
-                <DrawingOverlay chartApiRef={chartApiRef} chartVersion={chartVersion}>
+                <DrawingOverlay chartApiRef={chartApiRef} chartVersion={chartVersion}
+                  storageKey={`${stock.symbol}:${timeframe}`}>
                   <ChartAutoHeight
                     candles={chartData.candles}
                     ema20={chartData.ema20}
                     ema50={chartData.ema50}
                     ema150={chartData.ema150}
+                    macdLine={chartData.macdLine}
+                    macdSignal={chartData.macdSignal}
+                    macdHistogram={chartData.macdHistogram}
                     ratioLine={chartData.ratioLine}
                     ratioEma20={chartData.ratioEma20}
                     ratioEma150={chartData.ratioEma150}

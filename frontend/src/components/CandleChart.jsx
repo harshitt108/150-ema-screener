@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { createChart, CandlestickSeries, LineSeries, LineStyle } from 'lightweight-charts'
+import { createChart, CandlestickSeries, LineSeries, HistogramSeries, LineStyle } from 'lightweight-charts'
 
 // Price pane EMA colours
 const PRICE_EMA = {
@@ -8,24 +8,28 @@ const PRICE_EMA = {
   ema150: { color: '#212121', lineWidth: 2,   title: '150 EMA' },
 }
 
-// Ratio pane colours (matches screenshot: blue line, yellow 20 EMA, dark dashed 150 EMA)
+// Ratio pane colours
 const RATIO_STYLE = {
   line:  { color: '#2196F3', lineWidth: 1.5, title: 'Ratio'    },
   ema20: { color: '#FF9800', lineWidth: 1.5, title: '20 EMA'   },
   ema150:{ color: '#424242', lineWidth: 1.5, title: '150 EMA', lineStyle: LineStyle.Dashed },
 }
 
+// Pane indices — MACD sits between price and ratio
 const MAIN_PANE  = 0
-const RATIO_PANE = 1
+const MACD_PANE  = 1
+const RATIO_PANE = 2
 
 export default function CandleChart({
   candles, ema20, ema50, ema150,
+  macdLine, macdSignal, macdHistogram,
   ratioLine, ratioEma20, ratioEma150,
   height = 500,
-  onReady,          // (api: { chart, mainSeries }) => void — called after chart is created
+  onReady,
 }) {
   const containerRef = useRef(null)
 
+  const hasMacd  = macdLine?.length > 0
   const hasRatio = ratioLine?.length > 0
 
   useEffect(() => {
@@ -54,7 +58,7 @@ export default function CandleChart({
         },
       })
 
-      // ── Main price pane ────────────────────────────────────────────────
+      // ── Pane 0: Price + EMAs ───────────────────────────────────────────
       const candleSeries = chart.addSeries(CandlestickSeries, {
         upColor:         '#26a69a',
         downColor:       '#ef5350',
@@ -82,47 +86,96 @@ export default function CandleChart({
       addLine(ema50,  PRICE_EMA.ema50)
       addLine(ema150, PRICE_EMA.ema150)
 
-      // Expose the chart API for the drawing overlay
+      // Expose chart API for the drawing overlay
       onReady?.({ chart, mainSeries: candleSeries })
 
-      // ── Ratio lower pane ───────────────────────────────────────────────
+      // ── Pane 1: MACD(12,26,9) ─────────────────────────────────────────
+      // Simple: histogram (green above 0, red below 0) + MACD line + Signal line.
+      if (hasMacd) {
+        if (macdHistogram?.length) {
+          const hist = chart.addSeries(HistogramSeries, {
+            base:             0,
+            priceLineVisible: false,
+            lastValueVisible: false,
+          }, MACD_PANE)
+          hist.setData(macdHistogram)
+        }
+
+        if (macdLine?.length) {
+          const ml = chart.addSeries(LineSeries, {
+            color:            '#2196F3',
+            lineWidth:        1.5,
+            title:            'MACD',
+            priceLineVisible: false,
+            lastValueVisible: true,
+          }, MACD_PANE)
+          ml.setData(macdLine)
+        }
+
+        if (macdSignal?.length) {
+          const sl = chart.addSeries(LineSeries, {
+            color:            '#FF9800',
+            lineWidth:        1.5,
+            title:            'Signal',
+            priceLineVisible: false,
+            lastValueVisible: true,
+          }, MACD_PANE)
+          sl.setData(macdSignal)
+        }
+      }
+
+      // ── Pane 2: Ratio vs benchmark ─────────────────────────────────────
       if (hasRatio) {
         addLine(ratioLine,   RATIO_STYLE.line,   RATIO_PANE)
         addLine(ratioEma20,  RATIO_STYLE.ema20,  RATIO_PANE)
         addLine(ratioEma150, RATIO_STYLE.ema150, RATIO_PANE)
-
-        // Split height: 65% price, 35% ratio
-        const panes = chart.panes()
-        if (panes.length >= 2) {
-          panes[0].setHeight(Math.round(height * 0.65))
-          panes[1].setHeight(Math.round(height * 0.35))
-        }
       }
 
-      // Fit content immediately, then again after the browser has finished
-      // laying out the flex container — prevents blank left-side space.
-      chart.timeScale().fitContent()
-      const rafId = requestAnimationFrame(() => {
-        if (chart) chart.timeScale().fitContent()
+      // ── Pane sizing via STRETCH FACTORS (v5 proportional API) ──────────
+      // New panes default to a tiny stretch factor, which is why the MACD/Ratio
+      // panes were squished. Setting explicit relative weights distributes the
+      // height proportionally — bigger MACD so it's clearly readable.
+      const panes = chart.panes()
+      const nPanes = panes.length
+      if (nPanes >= 3 && hasMacd && hasRatio) {
+        panes[0].setStretchFactor(46)  // Price
+        panes[1].setStretchFactor(30)  // MACD — large
+        panes[2].setStretchFactor(24)  // Ratio
+      } else if (nPanes >= 2 && (hasMacd || hasRatio)) {
+        panes[0].setStretchFactor(65)
+        panes[1].setStretchFactor(35)
+      }
+
+      // fitContent must run AFTER pane-height mutations are committed to the DOM.
+      // One rAF is not enough — use two consecutive frames so the layout engine
+      // has fully applied the pane sizes before we ask for a time-scale fit.
+      const fit = () => { try { chart?.timeScale().fitContent() } catch { /* ignore */ } }
+      fit()
+      const raf1 = requestAnimationFrame(() => {
+        fit()
+        const raf2 = requestAnimationFrame(fit)
+        return raf2
       })
 
       const ro = new ResizeObserver(() => {
         if (containerRef.current && chart) {
           chart.applyOptions({ width: containerRef.current.clientWidth })
-          chart.timeScale().fitContent()
+          fit()
         }
       })
       ro.observe(containerRef.current)
 
       return () => {
-        cancelAnimationFrame(rafId)
+        cancelAnimationFrame(raf1)
         ro.disconnect()
         chart.remove()
       }
     } catch (err) {
       console.error('CandleChart error:', err)
     }
-  }, [candles, ema20, ema50, ema150, ratioLine, ratioEma20, ratioEma150, height, hasRatio])
+  }, [candles, ema20, ema50, ema150,
+      macdLine, macdSignal, macdHistogram,
+      ratioLine, ratioEma20, ratioEma150, height, hasMacd, hasRatio])
 
   return <div ref={containerRef} style={{ width: '100%', height }} />
 }

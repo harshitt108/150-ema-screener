@@ -5,7 +5,11 @@ import RSResultsTable from './components/RSResultsTable'
 import StockDetailPanel from './components/StockDetailPanel'
 import WatchlistPanel from './components/WatchlistPanel'
 import useWatchlist from './hooks/useWatchlist'
-import { Activity, TrendingUp, PanelLeftClose, PanelLeftOpen, SlidersHorizontal, Star } from 'lucide-react'
+import PortfolioList from './pages/PortfolioList'
+import PortfolioDetail from './pages/PortfolioDetail'
+import EmailConfigModal from './components/portfolio/EmailConfigModal'
+import Toaster from './components/Toast'
+import { Activity, TrendingUp, PanelLeftClose, PanelLeftOpen, SlidersHorizontal, Star, Briefcase, Mail } from 'lucide-react'
 import './index.css'
 
 const DEFAULT_PRICE_FILTERS = {
@@ -35,11 +39,17 @@ const DEFAULT_RS_FILTERS = {
 const API_BASE = 'http://localhost:8000'
 
 export default function App() {
+  // Top-level navigation: 'scanner' | 'portfolios'
+  const [topNav, setTopNav] = useState('scanner')
+  const [openPortfolioId, setOpenPortfolioId] = useState(null)
+  const [showEmailConfig, setShowEmailConfig] = useState(false)
+
   const [scanMode, setScanMode] = useState('price')
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [selectedStock, setSelectedStock] = useState(null)
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [watchlistOpen, setWatchlistOpen] = useState(false)
+  const [wlDetail, setWlDetail] = useState(null)  // { stocks, index, timeframe } for watchlist chart panel
   const watchlist = useWatchlist()
   const [priceFilters, setPriceFilters] = useState(DEFAULT_PRICE_FILTERS)
   const [rsFilters, setRsFilters] = useState(DEFAULT_RS_FILTERS)
@@ -58,17 +68,22 @@ export default function App() {
     setError(null)
   }
 
-  const handleScan = async () => {
+  const handleScan = async (overrideSymbols = null) => {
+    // A watchlist scan passes an explicit symbol list and always runs in price mode.
+    const watchlistSymbols = Array.isArray(overrideSymbols) && overrideSymbols.length
+      ? overrideSymbols : null
+    const mode = watchlistSymbols ? 'price' : scanMode
     setScanning(true)
     setError(null)
     setHasScanned(false)
     try {
-      if (scanMode === 'price') {
+      if (mode === 'price') {
         const resp = await fetch(`${API_BASE}/api/scan`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             indices: priceFilters.indices,
+            symbols: watchlistSymbols,
             timeframe: priceFilters.timeframe,
             ema_period: priceFilters.emaPeriod,
             condition: priceFilters.condition,
@@ -136,43 +151,95 @@ export default function App() {
     <div className="min-h-screen bg-[#0a0a12] text-slate-200">
       {/* Header */}
       <header className="border-b border-[#1a1a2a] bg-[#0d0d18]">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
+        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
+          {/* Brand */}
+          <div className="flex items-center gap-3 flex-shrink-0">
             <div className="w-8 h-8 rounded-lg bg-violet-600 flex items-center justify-center">
               <TrendingUp size={16} className="text-white" />
             </div>
-            <div>
-              <h1 className="text-lg font-bold text-white leading-none">NSE EMA Scanner</h1>
-              <p className="text-xs text-slate-500 mt-0.5">Price EMA & Relative Strength scanner for Indian stocks</p>
-            </div>
+            <h1 className="text-base font-bold text-white leading-none hidden sm:block">NSE Toolkit</h1>
           </div>
-          <div className="flex items-center gap-3">
+
+          {/* Top nav tabs */}
+          <nav className="flex items-center gap-1 bg-[#13131f] border border-[#1e1e30] rounded-xl p-1">
             <button
-              onClick={() => setWatchlistOpen(true)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors
-                ${watchlist.lists.length > 0
-                  ? 'bg-amber-500/10 border-amber-500/30 text-amber-400 hover:bg-amber-500/20'
-                  : 'bg-[#13131f] border-[#2d2d45] text-slate-400 hover:text-amber-400 hover:border-amber-500/30'
+              onClick={() => setTopNav('scanner')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all
+                ${topNav === 'scanner'
+                  ? 'bg-violet-600 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200'
                 }`}
             >
-              <Star size={13} className={watchlist.isWatched('__any__') || watchlist.lists.length > 0 ? '' : ''} />
-              Watchlist
-              {watchlist.lists.length > 0 && (
-                <span className="bg-amber-500/20 text-amber-400 rounded px-1">
-                  {watchlist.lists.reduce((s,l)=>s+l.stocks.length,0)}
-                </span>
-              )}
+              <TrendingUp size={13} />
+              EMA Scanner
             </button>
+            <button
+              onClick={() => { setTopNav('portfolios'); setOpenPortfolioId(null) }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all
+                ${topNav === 'portfolios'
+                  ? 'bg-violet-600 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+                }`}
+            >
+              <Briefcase size={13} />
+              Portfolio Guardian
+            </button>
+          </nav>
+
+          {/* Right side actions */}
+          <div className="flex items-center gap-3 flex-shrink-0">
+            {topNav === 'scanner' && (
+              <button
+                onClick={() => setWatchlistOpen(true)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors
+                  ${watchlist.lists.length > 0
+                    ? 'bg-amber-500/10 border-amber-500/30 text-amber-400 hover:bg-amber-500/20'
+                    : 'bg-[#13131f] border-[#2d2d45] text-slate-400 hover:text-amber-400 hover:border-amber-500/30'
+                  }`}
+              >
+                <Star size={13} />
+                Watchlist
+                {watchlist.lists.length > 0 && (
+                  <span className="bg-amber-500/20 text-amber-400 rounded px-1">
+                    {watchlist.lists.reduce((s,l)=>s+l.stocks.length,0)}
+                  </span>
+                )}
+              </button>
+            )}
+            {topNav === 'portfolios' && (
+              <button
+                onClick={() => setShowEmailConfig(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[#2d2d45]
+                  bg-[#13131f] text-slate-400 hover:text-violet-400 hover:border-violet-500/40
+                  text-xs font-medium transition-colors"
+                title="Email configuration"
+              >
+                <Mail size={13} />
+                <span className="hidden sm:inline">Email Setup</span>
+              </button>
+            )}
             <div className="flex items-center gap-2 text-xs text-slate-500">
               <Activity size={12} className="text-emerald-500" />
-              <span>Live NSE Data via Yahoo Finance</span>
+              <span className="hidden sm:inline">Live NSE Data</span>
             </div>
           </div>
         </div>
       </header>
 
-      {/* Main layout */}
-      <div className="max-w-7xl mx-auto px-4 py-6">
+      {/* Portfolio Guardian view */}
+      {topNav === 'portfolios' && (
+        openPortfolioId
+          ? <PortfolioDetail
+              portfolioId={openPortfolioId}
+              onBack={() => setOpenPortfolioId(null)}
+            />
+          : <PortfolioList
+              onOpen={(p) => setOpenPortfolioId(p.id)}
+            />
+      )}
+
+      {/* Scanner main layout */}
+      {topNav !== 'portfolios' && <div className="max-w-7xl mx-auto px-4 py-6">
         <div className="flex gap-6 items-start">
 
           {/* Collapsible sidebar */}
@@ -270,8 +337,12 @@ export default function App() {
             )}
           </main>
         </div>
-      </div>
+      </div>}
     </div>
+
+    {showEmailConfig && (
+      <EmailConfigModal onClose={() => setShowEmailConfig(false)} />
+    )}
 
     {selectedStock && (
       <StockDetailPanel
@@ -291,10 +362,30 @@ export default function App() {
         watchlist={watchlist}
         onClose={() => setWatchlistOpen(false)}
         onScanWatchlist={(list) => {
-          // Future: scan watchlist stocks
+          const syms = (list?.stocks || []).map(s => s.symbol).filter(Boolean)
+          if (!syms.length) return
+          setScanMode('price')
+          handleScan(syms)
         }}
+        onOpenStock={(stocks, index, timeframe) => setWlDetail({ stocks, index, timeframe })}
       />
     )}
+
+    {/* Chart panel for a watchlist stock — prev/next navigates within the list */}
+    {wlDetail && (
+      <StockDetailPanel
+        stock={wlDetail.stocks[wlDetail.index]}
+        timeframe={wlDetail.timeframe}
+        onClose={() => setWlDetail(null)}
+        onPrev={() => setWlDetail(d => d && d.index > 0 ? { ...d, index: d.index - 1 } : d)}
+        onNext={() => setWlDetail(d => d && d.index < d.stocks.length - 1 ? { ...d, index: d.index + 1 } : d)}
+        currentIndex={wlDetail.index}
+        totalCount={wlDetail.stocks.length}
+        watchlist={watchlist}
+      />
+    )}
+
+    <Toaster />
     </>
   )
 }

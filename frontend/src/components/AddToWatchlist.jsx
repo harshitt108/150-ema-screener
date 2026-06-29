@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Star, Plus, Check, ChevronDown } from 'lucide-react'
+import { toast } from './Toast'
 
 export default function AddToWatchlist({ symbol, ltp, watchlist, compact = false }) {
   const { lists, createList, addStock, removeStock, listsContaining, isWatched } = watchlist
@@ -23,15 +24,22 @@ export default function AddToWatchlist({ symbol, ltp, watchlist, compact = false
     if (!name) return
     const id = createList(name)
     addStock(id, symbol, { ltp })
+    toast(`${symbol} added to ${name}`)
     setNewName('')
     setCreating(false)
     setOpen(false)
   }
 
   const toggle = (listId) => {
+    const list = lists.find(l => l.id === listId)
     const already = inLists.some(l => l.id === listId)
-    if (already) removeStock(listId, symbol)
-    else addStock(listId, symbol, { ltp })
+    if (already) {
+      removeStock(listId, symbol)
+      toast(`${symbol} removed from ${list?.name ?? 'watchlist'}`, 'info')
+    } else {
+      addStock(listId, symbol, { ltp })
+      toast(`${symbol} added to ${list?.name ?? 'watchlist'}`)
+    }
   }
 
   return (

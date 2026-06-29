@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 
 const TV_INTERVAL = {
   '5min': '5', '15min': '15', '30min': '30',
-  '1h': '60', '2h': '120', '4h': '240',
+  '1h': '60',
   'daily': 'D', 'weekly': 'W', 'monthly': 'M',
 }
 

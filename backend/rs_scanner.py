@@ -145,6 +145,8 @@ def _apply_condition(
         return None
     dist = (cur - cur_ema) / cur_ema * 100
 
+    if condition == "all":
+        return "Above EMA" if cur >= cur_ema else "Below EMA"
     if condition == "ignore":
         return "N/A"
     if condition == "above_ema":
