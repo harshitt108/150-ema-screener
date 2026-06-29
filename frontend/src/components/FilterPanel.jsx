@@ -3,26 +3,28 @@ import { Search, ChevronDown } from 'lucide-react'
 
 const INDEX_LIST = [
   "NIFTY 50", "NIFTY NEXT 50", "NIFTY 100", "NIFTY 200", "NIFTY 500",
+  "NIFTY MIDCAP 150", "NIFTY SMALLCAP 250",
+  "NSE F&O",
   "NIFTY BANK", "NIFTY IT", "NIFTY AUTO", "NIFTY PHARMA", "NIFTY FMCG",
-  "NIFTY METAL", "NIFTY ENERGY", "NIFTY REALTY", "NIFTY MIDCAP 50",
-  "NIFTY SMALLCAP 50", "All NSE Stocks"
+  "NIFTY METAL", "NIFTY ENERGY", "NIFTY REALTY",
+  "All NSE Stocks",
 ]
 
 const TIMEFRAMES = [
-  { value: "5min", label: "5 min" },
-  { value: "15min", label: "15 min" },
-  { value: "30min", label: "30 min" },
-  { value: "1h", label: "1 Hour" },
-  { value: "2h", label: "2 Hour" },
-  { value: "4h", label: "4 Hour" },
-  { value: "daily", label: "Daily" },
-  { value: "weekly", label: "Weekly" },
+  { value: "5min",    label: "5 min" },
+  { value: "15min",   label: "15 min" },
+  { value: "30min",   label: "30 min" },
+  { value: "1h",      label: "1 Hour" },
+  { value: "2h",      label: "2 Hour (90m)" },
+  { value: "4h",      label: "4 Hour (Daily)" },
+  { value: "daily",   label: "Daily" },
+  { value: "weekly",  label: "Weekly" },
   { value: "monthly", label: "Monthly" },
 ]
 
 const EMA_OPTIONS = [
-  { value: 20, label: "20 EMA" },
-  { value: 50, label: "50 EMA" },
+  { value: 20,  label: "20 EMA" },
+  { value: 50,  label: "50 EMA" },
   { value: 150, label: "150 EMA" },
   { value: 200, label: "200 EMA" },
 ]
@@ -30,22 +32,59 @@ const EMA_OPTIONS = [
 const CONDITIONS = [
   { value: "crossed_above", label: "Just Crossed Above EMA" },
   { value: "crossed_below", label: "Just Crossed Below EMA" },
-  { value: "near_ema", label: "Trading Near EMA" },
-  { value: "above_ema", label: "Above EMA" },
-  { value: "below_ema", label: "Below EMA" },
+  { value: "near_ema",      label: "Trading Near EMA" },
+  { value: "above_ema",     label: "Above EMA" },
+  { value: "below_ema",     label: "Below EMA" },
+]
+
+const RS_CONDITIONS = [
+  { value: "above_ema",     label: "Ratio Above EMA" },
+  { value: "below_ema",     label: "Ratio Below EMA" },
+  { value: "crossed_above", label: "Ratio Crossed Above EMA" },
+  { value: "crossed_below", label: "Ratio Crossed Below EMA" },
+  { value: "near_ema",      label: "Ratio Within ±X% of EMA" },
+  { value: "ignore",        label: "Ignore (Any)" },
+]
+
+const BENCHMARKS = [
+  "Sector Index (Auto Detect)",
+  "NIFTY 50",
+  "NIFTY Next 50",
+  "NIFTY 100",
+  "NIFTY 500",
+  "NIFTY Midcap 100",
+  "NIFTY Midcap 150",
+  "NIFTY Smallcap 250",
+  "NIFTY Auto",
+  "NIFTY IT",
+  "NIFTY Pharma",
+  "NIFTY FMCG",
+  "NIFTY Metal",
+  "NIFTY Bank",
+  "NIFTY Realty",
+  "NIFTY Energy",
+]
+
+const RS_TREND_OPTIONS = [
+  { value: "Any",      label: "Any Trend" },
+  { value: "Rising",   label: "Rising" },
+  { value: "Falling",  label: "Falling" },
+  { value: "Sideways", label: "Sideways" },
 ]
 
 const DISTANCE_OPTIONS = [1, 2, 3, 5, 10]
 const LOOKBACK_OPTIONS = [
-  { value: 1, label: "Last Candle" },
-  { value: 2, label: "Last 2 Candles" },
-  { value: 3, label: "Last 3 Candles" },
-  { value: 5, label: "Last 5 Candles" },
+  { value: 1,  label: "Last Candle" },
+  { value: 2,  label: "Last 2 Candles" },
+  { value: 3,  label: "Last 3 Candles" },
+  { value: 5,  label: "Last 5 Candles" },
   { value: 10, label: "Last Week" },
   { value: 20, label: "Last Month" },
 ]
 
-function Select({ value, onChange, options, label }) {
+// ─── Shared sub-components ─────────────────────────────────────────────────
+
+function Select({ value, onChange, options }) {
   return (
     <div className="relative">
       <select
@@ -69,7 +108,6 @@ function Select({ value, onChange, options, label }) {
 
 function MultiSelect({ selected, onChange }) {
   const [open, setOpen] = useState(false)
-
   const toggle = (idx) => {
     if (selected.includes(idx)) {
       if (selected.length === 1) return
@@ -78,7 +116,6 @@ function MultiSelect({ selected, onChange }) {
       onChange([...selected, idx])
     }
   }
-
   return (
     <div className="relative">
       <button
@@ -92,7 +129,6 @@ function MultiSelect({ selected, onChange }) {
         </span>
         <ChevronDown size={14} className="text-slate-500 ml-2 flex-shrink-0" />
       </button>
-
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
@@ -120,9 +156,238 @@ function MultiSelect({ selected, onChange }) {
   )
 }
 
-export default function FilterPanel({ filters, onChange, onScan, scanning, resultCount }) {
+function RadioGroup({ value, onChange, options }) {
+  return (
+    <div className="space-y-2">
+      {options.map(c => (
+        <label key={c.value} className="flex items-center gap-2.5 cursor-pointer group">
+          <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors
+            ${value === c.value ? 'border-violet-500' : 'border-[#3a3a55] group-hover:border-[#5a5a75]'}`}>
+            {value === c.value && <div className="w-2 h-2 rounded-full bg-violet-500" />}
+          </div>
+          <input type="radio" value={c.value} checked={value === c.value} onChange={() => onChange(c.value)} className="sr-only" />
+          <span className={`text-sm transition-colors ${value === c.value ? 'text-slate-200' : 'text-slate-500 group-hover:text-slate-400'}`}>
+            {c.label}
+          </span>
+        </label>
+      ))}
+    </div>
+  )
+}
+
+function Label({ children }) {
+  return <label className="block text-xs font-medium text-slate-500 mb-1.5 uppercase tracking-wider">{children}</label>
+}
+
+function Section({ children }) {
+  return <div>{children}</div>
+}
+
+// ─── Price EMA Filter Panel ─────────────────────────────────────────────────
+
+function PriceFilters({ filters, onChange }) {
   const showLookback = filters.condition === 'crossed_above' || filters.condition === 'crossed_below'
   const showDistance = filters.condition === 'near_ema'
+
+  return (
+    <div className="space-y-4">
+      <Section>
+        <Label>Timeframe</Label>
+        <Select value={filters.timeframe} onChange={v => onChange({ ...filters, timeframe: v })} options={TIMEFRAMES} />
+      </Section>
+
+      <Section>
+        <Label>Moving Average</Label>
+        <Select
+          value={filters.emaPeriod}
+          onChange={v => onChange({ ...filters, emaPeriod: parseInt(v) })}
+          options={EMA_OPTIONS}
+        />
+      </Section>
+
+      <Section>
+        <Label>Condition</Label>
+        <RadioGroup value={filters.condition} onChange={v => onChange({ ...filters, condition: v })} options={CONDITIONS} />
+      </Section>
+
+      {showDistance && (
+        <Section>
+          <Label>Distance <span className="text-violet-400 normal-case font-semibold">±{filters.distancePct}%</span></Label>
+          <input
+            type="range" min={1} max={10} step={1} value={filters.distancePct}
+            onChange={e => onChange({ ...filters, distancePct: parseInt(e.target.value) })}
+            className="w-full accent-violet-500"
+          />
+          <div className="flex justify-between text-xs text-slate-600 mt-1">
+            {DISTANCE_OPTIONS.map(d => <span key={d}>±{d}%</span>)}
+          </div>
+        </Section>
+      )}
+
+      {showLookback && (
+        <Section>
+          <Label>Cross Lookback</Label>
+          <Select
+            value={filters.crossLookback}
+            onChange={v => onChange({ ...filters, crossLookback: parseInt(v) })}
+            options={LOOKBACK_OPTIONS}
+          />
+        </Section>
+      )}
+    </div>
+  )
+}
+
+// ─── Relative Strength Filter Panel ────────────────────────────────────────
+
+function RSFilters({ filters, onChange }) {
+  const showLookback = filters.rsCondition === 'crossed_above' || filters.rsCondition === 'crossed_below'
+  const showDistance = filters.rsCondition === 'near_ema'
+  const showPriceSub = filters.enablePriceFilter
+  const showPriceLookback = filters.priceCondition === 'crossed_above' || filters.priceCondition === 'crossed_below'
+  const showPriceDistance = filters.priceCondition === 'near_ema'
+
+  return (
+    <div className="space-y-4">
+      <Section>
+        <Label>Timeframe</Label>
+        <Select value={filters.timeframe} onChange={v => onChange({ ...filters, timeframe: v })} options={TIMEFRAMES} />
+      </Section>
+
+      <Section>
+        <Label>Compare Against</Label>
+        <Select
+          value={filters.benchmark}
+          onChange={v => onChange({ ...filters, benchmark: v })}
+          options={BENCHMARKS.map(b => ({ value: b, label: b }))}
+        />
+        {filters.benchmark === 'Sector Index (Auto Detect)' && (
+          <p className="text-xs text-slate-600 mt-1">Each stock compared to its own sector index</p>
+        )}
+      </Section>
+
+      <Section>
+        <Label>RS EMA Period</Label>
+        <Select
+          value={filters.emaPeriod}
+          onChange={v => onChange({ ...filters, emaPeriod: parseInt(v) })}
+          options={EMA_OPTIONS}
+        />
+      </Section>
+
+      <Section>
+        <Label>RS Condition</Label>
+        <RadioGroup value={filters.rsCondition} onChange={v => onChange({ ...filters, rsCondition: v })} options={RS_CONDITIONS} />
+      </Section>
+
+      {showDistance && (
+        <Section>
+          <Label>Distance <span className="text-violet-400 normal-case font-semibold">±{filters.distancePct}%</span></Label>
+          <input
+            type="range" min={1} max={10} step={1} value={filters.distancePct}
+            onChange={e => onChange({ ...filters, distancePct: parseInt(e.target.value) })}
+            className="w-full accent-violet-500"
+          />
+          <div className="flex justify-between text-xs text-slate-600 mt-1">
+            {DISTANCE_OPTIONS.map(d => <span key={d}>±{d}%</span>)}
+          </div>
+        </Section>
+      )}
+
+      {showLookback && (
+        <Section>
+          <Label>Cross Lookback</Label>
+          <Select
+            value={filters.crossLookback}
+            onChange={v => onChange({ ...filters, crossLookback: parseInt(v) })}
+            options={LOOKBACK_OPTIONS}
+          />
+        </Section>
+      )}
+
+      <Section>
+        <Label>RS Trend</Label>
+        <Select
+          value={filters.rsTrendFilter}
+          onChange={v => onChange({ ...filters, rsTrendFilter: v })}
+          options={RS_TREND_OPTIONS}
+        />
+      </Section>
+
+      {/* Combined price condition toggle */}
+      <div className="border-t border-[#1e1e30] pt-4">
+        <label className="flex items-center gap-2.5 cursor-pointer group">
+          <div
+            onClick={() => onChange({ ...filters, enablePriceFilter: !filters.enablePriceFilter })}
+            className={`w-9 h-5 rounded-full transition-colors relative flex-shrink-0
+              ${filters.enablePriceFilter ? 'bg-violet-600' : 'bg-[#2d2d45]'}`}
+          >
+            <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform
+              ${filters.enablePriceFilter ? 'translate-x-4' : 'translate-x-0.5'}`} />
+          </div>
+          <span className="text-sm text-slate-400 group-hover:text-slate-300 transition-colors">
+            Also filter by Price EMA
+          </span>
+        </label>
+
+        {showPriceSub && (
+          <div className="mt-4 space-y-4 pl-3 border-l-2 border-violet-500/30">
+            <Section>
+              <Label>Price EMA Period</Label>
+              <Select
+                value={filters.priceEmaPeriod}
+                onChange={v => onChange({ ...filters, priceEmaPeriod: parseInt(v) })}
+                options={EMA_OPTIONS}
+              />
+            </Section>
+            <Section>
+              <Label>Price Condition</Label>
+              <RadioGroup
+                value={filters.priceCondition}
+                onChange={v => onChange({ ...filters, priceCondition: v })}
+                options={CONDITIONS}
+              />
+            </Section>
+            {showPriceDistance && (
+              <Section>
+                <Label>Price Distance <span className="text-violet-400 normal-case font-semibold">±{filters.priceDistancePct}%</span></Label>
+                <input
+                  type="range" min={1} max={10} step={1} value={filters.priceDistancePct}
+                  onChange={e => onChange({ ...filters, priceDistancePct: parseInt(e.target.value) })}
+                  className="w-full accent-violet-500"
+                />
+              </Section>
+            )}
+            {showPriceLookback && (
+              <Section>
+                <Label>Price Cross Lookback</Label>
+                <Select
+                  value={filters.crossLookback}
+                  onChange={v => onChange({ ...filters, crossLookback: parseInt(v) })}
+                  options={LOOKBACK_OPTIONS}
+                />
+              </Section>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Main FilterPanel ───────────────────────────────────────────────────────
+
+export default function FilterPanel({
+  scanMode, onModeChange,
+  filters, onFiltersChange,
+  rsFilters, onRsFiltersChange,
+  onScan, scanning, resultCount,
+}) {
+  const indices = scanMode === 'price' ? filters.indices : rsFilters.indices
+  const onIndicesChange = (v) => {
+    if (scanMode === 'price') onFiltersChange({ ...filters, indices: v })
+    else onRsFiltersChange({ ...rsFilters, indices: v })
+  }
 
   return (
     <div className="bg-[#13131f] border border-[#1e1e30] rounded-xl p-5 space-y-5">
@@ -132,96 +397,36 @@ export default function FilterPanel({ filters, onChange, onScan, scanning, resul
         <h2 className="text-sm font-semibold text-slate-300 tracking-wide uppercase">Scanner Filters</h2>
       </div>
 
-      <div className="grid grid-cols-1 gap-4">
-        {/* Index */}
-        <div>
-          <label className="block text-xs font-medium text-slate-500 mb-1.5 uppercase tracking-wider">Index</label>
-          <MultiSelect
-            selected={filters.indices}
-            onChange={v => onChange({ ...filters, indices: v })}
-          />
-        </div>
-
-        {/* Timeframe */}
-        <div>
-          <label className="block text-xs font-medium text-slate-500 mb-1.5 uppercase tracking-wider">Timeframe</label>
-          <Select
-            value={filters.timeframe}
-            onChange={v => onChange({ ...filters, timeframe: v })}
-            options={TIMEFRAMES}
-          />
-        </div>
-
-        {/* Moving Average */}
-        <div>
-          <label className="block text-xs font-medium text-slate-500 mb-1.5 uppercase tracking-wider">Moving Average</label>
-          <Select
-            value={filters.emaPeriod}
-            onChange={v => onChange({ ...filters, emaPeriod: parseInt(v) })}
-            options={EMA_OPTIONS}
-          />
-        </div>
-
-        {/* Condition */}
-        <div>
-          <label className="block text-xs font-medium text-slate-500 mb-1.5 uppercase tracking-wider">Condition</label>
-          <div className="space-y-2">
-            {CONDITIONS.map(c => (
-              <label key={c.value} className="flex items-center gap-2.5 cursor-pointer group">
-                <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors
-                  ${filters.condition === c.value ? 'border-violet-500' : 'border-[#3a3a55] group-hover:border-[#5a5a75]'}`}>
-                  {filters.condition === c.value && (
-                    <div className="w-2 h-2 rounded-full bg-violet-500" />
-                  )}
-                </div>
-                <input
-                  type="radio"
-                  name="condition"
-                  value={c.value}
-                  checked={filters.condition === c.value}
-                  onChange={() => onChange({ ...filters, condition: c.value })}
-                  className="sr-only"
-                />
-                <span className={`text-sm transition-colors ${filters.condition === c.value ? 'text-slate-200' : 'text-slate-500 group-hover:text-slate-400'}`}>
-                  {c.label}
-                </span>
-              </label>
-            ))}
-          </div>
-        </div>
-
-        {/* Distance slider — only for Near EMA */}
-        {showDistance && (
-          <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1.5 uppercase tracking-wider">
-              Distance &nbsp;
-              <span className="text-violet-400 normal-case font-semibold">±{filters.distancePct}%</span>
-            </label>
-            <input
-              type="range"
-              min={1} max={10} step={1}
-              value={filters.distancePct}
-              onChange={e => onChange({ ...filters, distancePct: parseInt(e.target.value) })}
-              className="w-full accent-violet-500"
-            />
-            <div className="flex justify-between text-xs text-slate-600 mt-1">
-              {DISTANCE_OPTIONS.map(d => <span key={d}>±{d}%</span>)}
-            </div>
-          </div>
-        )}
-
-        {/* Cross lookback — only for cross conditions */}
-        {showLookback && (
-          <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1.5 uppercase tracking-wider">Cross Lookback</label>
-            <Select
-              value={filters.crossLookback}
-              onChange={v => onChange({ ...filters, crossLookback: parseInt(v) })}
-              options={LOOKBACK_OPTIONS}
-            />
-          </div>
-        )}
+      {/* Mode tabs */}
+      <div className="flex rounded-lg overflow-hidden border border-[#2d2d45] text-xs font-semibold">
+        {[
+          { key: 'price', label: 'Price EMA' },
+          { key: 'rs',    label: 'Rel. Strength' },
+        ].map(tab => (
+          <button
+            key={tab.key}
+            onClick={() => onModeChange(tab.key)}
+            className={`flex-1 py-2 transition-colors
+              ${scanMode === tab.key
+                ? 'bg-violet-600 text-white'
+                : 'bg-[#1a1a2e] text-slate-500 hover:text-slate-300'}`}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
+
+      {/* Universe (shared) */}
+      <div>
+        <Label>Universe</Label>
+        <MultiSelect selected={indices} onChange={onIndicesChange} />
+      </div>
+
+      {/* Mode-specific filters */}
+      {scanMode === 'price'
+        ? <PriceFilters filters={filters} onChange={onFiltersChange} />
+        : <RSFilters filters={rsFilters} onChange={onRsFiltersChange} />
+      }
 
       {/* Scan button */}
       <button

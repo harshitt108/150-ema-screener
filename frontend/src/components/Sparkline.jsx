@@ -1,4 +1,4 @@
-export default function Sparkline({ prices, emaLine, width = 80, height = 32 }) {
+export default function Sparkline({ prices, emaLine, width = 110, height = 32 }) {
   if (!prices || prices.length < 2) return <span className="text-slate-600 text-xs">—</span>
 
   const all = [...prices, ...emaLine]

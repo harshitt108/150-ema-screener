@@ -14,8 +14,8 @@ INTERVAL_MAP = {
     "15m":  "15m",
     "30m":  "30m",
     "1h":   "60m",
-    "2h":   "2h",
-    "4h":   "4h",  # not supported by Yahoo, will fall back to 1h
+    "2h":   "90m",   # Yahoo has no 2h interval; 90m is the closest supported option
+    "4h":   "1d",    # Yahoo has no 4h interval; fall back to daily
     "1d":   "1d",
     "1wk":  "1wk",
     "1mo":  "1mo",
@@ -26,9 +26,6 @@ YAHOO_BASE = "https://query1.finance.yahoo.com/v8/finance/chart"
 
 def fetch_ohlcv(symbol: str, interval: str, period: str) -> Optional[pd.DataFrame]:
     yf_interval = INTERVAL_MAP.get(interval, interval)
-    # 4h not supported by Yahoo; map to 1d
-    if yf_interval == "4h":
-        yf_interval = "1d"
 
     url = f"{YAHOO_BASE}/{symbol}"
     params = {
