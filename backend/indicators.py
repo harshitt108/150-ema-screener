@@ -87,7 +87,13 @@ def compute_signals(stock_df: pd.DataFrame, ratio: Optional[pd.Series] = None) -
         return f"{(v - ref) / ref * 100:+.2f}%"
 
     def _cond(label, bull, val):
-        return {"label": label, "bull": bool(bull), "val": str(val)}
+        bull = bool(bull)
+        # Every label here is phrased as the bullish condition ("X > Y") — when
+        # it's false, the actual relationship is the reverse, so flip the sign
+        # rather than showing a false ">" next to a red/bearish chip.
+        if not bull and " > " in label:
+            label = label.replace(" > ", " < ")
+        return {"label": label, "bull": bull, "val": str(val)}
 
     conds = {}
 
@@ -98,7 +104,11 @@ def compute_signals(stock_df: pd.DataFrame, ratio: Optional[pd.Series] = None) -
         conds["price_gt_150ema"] = _cond("Price > 150 EMA", ltp > e150, _pct(ltp, e150))
 
     # 4: Short-term EMA alignment
-    conds["ema20_gt_50"] = _cond("20 EMA > 50 EMA", e20 > e50, f"{e20:.1f} vs {e50:.1f}")
+    ema20_bull = e20 > e50
+    conds["ema20_gt_50"] = _cond(
+        "20 EMA > 50 EMA", ema20_bull,
+        f"{'Bullish' if ema20_bull else 'Bearish'} ({e20:.1f} vs {e50:.1f})"
+    )
 
     # 5: RSI
     rsi_val = float(rsi(close, 14).iloc[-1])
@@ -173,3 +183,243 @@ def compute_signals(stock_df: pd.DataFrame, ratio: Optional[pd.Series] = None) -
         "pct":        round(pct, 1),
         "conditions": conds,
     }
+
+
+# ─── Multi-timeframe matrix ──────────────────────────────────────────────────
+
+def compute_mtf_snapshot(df: pd.DataFrame, ratio: Optional[pd.Series] = None) -> dict:
+    """Snapshot of 8 indicators at the latest bar of `df` — one column of the
+    multi-timeframe matrix. Each row is None when there isn't enough history
+    for that indicator to be meaningful (e.g. 150 EMA on a short intraday range)."""
+    from scanner import calculate_ema
+
+    close, high, low = df["Close"], df["High"], df["Low"]
+
+    def last(s):
+        if s is None or len(s) == 0:
+            return None
+        v = s.iloc[-1]
+        return None if pd.isna(v) else float(v)
+
+    rows = {}
+    bull_count = 0
+    total = 0
+
+    def count(bull):
+        nonlocal bull_count, total
+        total += 1
+        if bull:
+            bull_count += 1
+
+    ltp = last(close)
+
+    rsi_v = last(rsi(close, 14))
+    if rsi_v is not None:
+        b = rsi_v > 50
+        rows["rsi"] = {"value": round(rsi_v, 1), "bull": b}
+        count(b)
+    else:
+        rows["rsi"] = None
+
+    macd_l, sig_l = macd(close)
+    mv, sv = last(macd_l), last(sig_l)
+    if mv is not None and sv is not None:
+        b = mv > sv
+        rows["macd"] = {"status": "Bull" if b else "Bear", "bull": b}
+        count(b)
+    else:
+        rows["macd"] = None
+
+    e20  = last(calculate_ema(close, 20))
+    e50  = last(calculate_ema(close, 50))
+    e150 = last(calculate_ema(close, 150))
+
+    if e20 is not None and ltp is not None:
+        b = ltp > e20
+        rows["ema20"] = {"value": round(e20, 2), "bull": b}
+        count(b)
+    else:
+        rows["ema20"] = None
+
+    if e50 is not None and ltp is not None:
+        b = ltp > e50
+        rows["ema50"] = {"value": round(e50, 2), "bull": b}
+        count(b)
+    else:
+        rows["ema50"] = None
+
+    if e150 is not None and ltp is not None:
+        b = ltp > e150
+        rows["ema150"] = {"value": round(e150, 2), "bull": b}
+        count(b)
+    else:
+        rows["ema150"] = None
+
+    if e20 is not None and e50 is not None:
+        b = e20 > e50
+        rows["emaCross"] = {"above": b, "bull": b, "ema20": round(e20, 2), "ema50": round(e50, 2)}
+        count(b)
+    else:
+        rows["emaCross"] = None
+
+    rows["ratioEma20"] = None
+    if ratio is not None and len(ratio) >= 20:
+        r_cur = last(ratio)
+        r_e20 = last(calculate_ema(ratio, 20))
+        if r_cur is not None and r_e20 is not None:
+            b = r_cur > r_e20
+            rows["ratioEma20"] = {"value": round(r_cur, 4), "ema": round(r_e20, 4), "bull": b}
+            count(b)
+
+    au, adn = aroon(high, low, 25)
+    au_v, adn_v = last(au), last(adn)
+    if au_v is not None and adn_v is not None:
+        osc = au_v - adn_v
+        b = osc > 0
+        rows["aroon"] = {"value": round(osc, 0), "bull": b}
+        count(b)
+    else:
+        rows["aroon"] = None
+
+    rows["bullCount"] = bull_count
+    rows["total"] = total
+    return rows
+
+
+# ─── Signal history (derived crossover events) ──────────────────────────────
+
+def _crossover_events(series: pd.Series, ref: pd.Series, start_i: int, label_up: str, label_down: str) -> list:
+    ev = []
+    n = len(series)
+    for i in range(start_i, n):
+        if pd.isna(ref.iloc[i]) or pd.isna(ref.iloc[i - 1]):
+            continue
+        prev_above = float(series.iloc[i - 1]) > float(ref.iloc[i - 1])
+        cur_above  = float(series.iloc[i])     > float(ref.iloc[i])
+        if cur_above and not prev_above:
+            ev.append({"date": series.index[i], "type": "bullish", "label": label_up})
+        elif not cur_above and prev_above:
+            ev.append({"date": series.index[i], "type": "bearish", "label": label_down})
+    return ev
+
+
+def compute_signal_history(df: pd.DataFrame, ratio: Optional[pd.Series] = None,
+                            lookback_days: int = 120, max_events: int = 20) -> list:
+    """Dated crossover / regime-change events over the trailing window,
+    derived from already-fetched OHLC (+ ratio) history — no persistence needed."""
+    from scanner import calculate_ema
+
+    close, high, low, volume = df["Close"], df["High"], df["Low"], df["Volume"]
+    n = len(close)
+    if n < 30:
+        return []
+
+    start_i = max(1, n - lookback_days)
+    events = []
+
+    e20, e50, e150 = calculate_ema(close, 20), calculate_ema(close, 50), calculate_ema(close, 150)
+    events += _crossover_events(close, e20,  start_i, "Price crossed above 20 EMA",  "Price crossed below 20 EMA")
+    events += _crossover_events(close, e50,  start_i, "Price crossed above 50 EMA",  "Price crossed below 50 EMA")
+    events += _crossover_events(close, e150, start_i, "Price crossed above 150 EMA", "Price crossed below 150 EMA")
+
+    macd_l, sig_l = macd(close)
+    events += _crossover_events(macd_l, sig_l, start_i, "MACD turned bullish", "MACD turned bearish")
+
+    rsi_s = rsi(close, 14)
+    fifty = pd.Series(50.0, index=rsi_s.index)
+    events += _crossover_events(rsi_s, fifty, start_i, "RSI entered bullish zone (>50)", "RSI entered bearish zone (<50)")
+
+    vol_avg50 = volume.rolling(50).mean()
+    for i in range(start_i, n):
+        avg = vol_avg50.iloc[i]
+        if pd.isna(avg) or avg <= 0:
+            continue
+        if float(volume.iloc[i]) > 1.5 * float(avg):
+            direction = "bullish" if float(close.iloc[i]) >= float(close.iloc[i - 1]) else "bearish"
+            events.append({"date": close.index[i], "type": direction, "label": "Volume breakout confirmed"})
+
+    if ratio is not None and len(ratio) >= 20:
+        r_e20 = calculate_ema(ratio, 20)
+        r_start = max(1, len(ratio) - lookback_days)
+        events += _crossover_events(ratio, r_e20, r_start, "Ratio crossed above 20 EMA", "Ratio crossed below 20 EMA")
+
+    events.sort(key=lambda e: e["date"])
+    out = events[-max_events:]
+    return [{"date": e["date"].strftime("%Y-%m-%d"), "type": e["type"], "label": e["label"]} for e in out]
+
+
+# ─── Rating history (walk-forward score, no lookahead) ──────────────────────
+
+def compute_rating_history(df: pd.DataFrame, ratio: Optional[pd.Series] = None, days: int = 20) -> list:
+    """Score for each of the last `days` bars using only indicator values already
+    settled at that bar (EMA/RSI/MACD/etc. are causal by construction) — so this
+    is a true walk-forward score, not a recomputation with future data removed."""
+    from scanner import calculate_ema
+
+    close, high, low, volume = df["Close"], df["High"], df["Low"], df["Volume"]
+    n = len(close)
+    if n < 30:
+        return []
+
+    e20, e50, e150 = calculate_ema(close, 20), calculate_ema(close, 50), calculate_ema(close, 150)
+    macd_l, sig_l = macd(close)
+    rsi_s = rsi(close, 14)
+    roc_s = momentum(close, 21)
+    obv_s = obv(close, volume)
+    obv_e50 = calculate_ema(obv_s, 50)
+    ad_s = ad_line(high, low, close, volume)
+    ad_e21 = calculate_ema(ad_s, 21)
+    au, adn = aroon(high, low, 25)
+    aroon_osc = au - adn
+
+    ratio_emas = []
+    if ratio is not None and len(ratio) >= 20:
+        ratio_emas.append(calculate_ema(ratio, 20))
+        if len(ratio) >= 50:
+            ratio_emas.append(calculate_ema(ratio, 50))
+        if len(ratio) >= 150:
+            ratio_emas.append(calculate_ema(ratio, 150))
+
+    def rating_for(pct):
+        if pct >= 80: return "Strong Buy"
+        if pct >= 70: return "Buy"
+        if pct >= 40: return "Hold"
+        if pct >= 20: return "Sell"
+        return "Strong Sell"
+
+    out = []
+    for idx in close.index[-days:]:
+        conds = []
+        if not pd.isna(e20.loc[idx]):
+            conds.append(float(close.loc[idx]) > float(e20.loc[idx]))
+        if not pd.isna(e50.loc[idx]):
+            conds.append(float(close.loc[idx]) > float(e50.loc[idx]))
+        if not pd.isna(e150.loc[idx]):
+            conds.append(float(close.loc[idx]) > float(e150.loc[idx]))
+        if not pd.isna(e20.loc[idx]) and not pd.isna(e50.loc[idx]):
+            conds.append(float(e20.loc[idx]) > float(e50.loc[idx]))
+        if not pd.isna(rsi_s.loc[idx]):
+            conds.append(float(rsi_s.loc[idx]) > 50)
+        if not pd.isna(macd_l.loc[idx]) and not pd.isna(sig_l.loc[idx]):
+            conds.append(float(macd_l.loc[idx]) > float(sig_l.loc[idx]))
+        if not pd.isna(roc_s.loc[idx]):
+            conds.append(float(roc_s.loc[idx]) > 0)
+        if not pd.isna(obv_e50.loc[idx]):
+            conds.append(float(obv_s.loc[idx]) > float(obv_e50.loc[idx]))
+        if not pd.isna(ad_e21.loc[idx]):
+            conds.append(float(ad_s.loc[idx]) > float(ad_e21.loc[idx]))
+        if not pd.isna(aroon_osc.loc[idx]):
+            conds.append(float(aroon_osc.loc[idx]) > 0)
+        for r_e in ratio_emas:
+            if idx in r_e.index and idx in ratio.index and not pd.isna(r_e.loc[idx]):
+                conds.append(float(ratio.loc[idx]) > float(r_e.loc[idx]))
+
+        total = len(conds)
+        bull = sum(1 for c in conds if c)
+        pct = round(bull / total * 100, 1) if total else 0.0
+        out.append({"date": idx.strftime("%Y-%m-%d"), "score": pct, "rating": rating_for(pct)})
+
+    for i in range(len(out)):
+        out[i]["change"] = None if i == 0 else round(out[i]["score"] - out[i - 1]["score"], 1)
+
+    return out

@@ -125,24 +125,44 @@ class MonitoringRule(Base):
     rule_type = 'stock_ema'
       → fires when the named symbol satisfies condition vs EMA on timeframe
       → e.g. "RELIANCE is below 150 EMA on 1h"
+
+    rule_type = 'stock_price_change'
+      → fires when the named symbol's latest-bar % change vs the previous bar
+        (on `timeframe`) meets `condition` (up | down | either) by `threshold_value`%
+      → e.g. "RELIANCE dropped 10% or more on daily" — ema_period is unused (0)
+
+    rule_type = 'portfolio_price_change'
+      → same as stock_price_change but checked against EVERY holding; fires
+        (with a breakdown, like portfolio_threshold) if ANY holding breaches
+      → e.g. "any holding drops 10% or more on daily" — symbol/ema_period unused
+
+    condition_b_json / logic_op (optional second condition, AND/OR with the
+    primary condition — only meaningful when rule_type is stock_ema or
+    stock_price_change, and always checked against the SAME symbol):
+      {"metric": "ema", "timeframe": "daily", "ema_period": 150, "condition": "below"}
+      {"metric": "price_change", "timeframe": "daily", "condition": "down", "threshold_value": 5}
     """
     __tablename__ = "monitoring_rules"
 
     id               = Column(Integer, primary_key=True, index=True)
     portfolio_id     = Column(Integer, ForeignKey("portfolios.id"), nullable=False)
     name             = Column(String, nullable=False)
-    rule_type        = Column(String, nullable=False)   # portfolio_threshold | stock_ema
+    rule_type        = Column(String, nullable=False)   # portfolio_threshold | stock_ema | stock_price_change | portfolio_price_change
     timeframe        = Column(String, nullable=False)   # 1h | daily | weekly | …
-    ema_period       = Column(Integer, nullable=False)  # 20 | 50 | 150 | 200
-    condition        = Column(String, nullable=False)   # above | below
+    ema_period       = Column(Integer, nullable=False)  # 20 | 50 | 150 | 200 — unused (0) for *_price_change
+    condition        = Column(String, nullable=False)   # above | below (ema types) | up | down | either (price_change types)
 
     # portfolio_threshold fields
     operator         = Column(String, nullable=True)    # gte | lte | eq
     threshold_type   = Column(String, nullable=True)    # count | percent
-    threshold_value  = Column(Float, nullable=True)
+    threshold_value  = Column(Float, nullable=True)      # also used as the %Chg threshold for *_price_change
 
-    # stock_ema fields
+    # stock_ema / stock_price_change fields
     symbol           = Column(String, nullable=True)
+
+    # optional second condition, combined with the primary one via logic_op
+    condition_b_json = Column(Text, nullable=True)
+    logic_op         = Column(String, nullable=True)    # AND | OR
 
     enabled          = Column(Boolean, default=True)
     created_at       = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -172,10 +192,15 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     # Add columns introduced after initial schema without dropping existing data.
     with engine.connect() as con:
-        for col, ddl in [("crosses_json", "TEXT")]:
+        migrations = [
+            ("scan_results",      "crosses_json",      "TEXT"),
+            ("monitoring_rules",  "condition_b_json",   "TEXT"),
+            ("monitoring_rules",  "logic_op",           "TEXT"),
+        ]
+        for table, col, ddl in migrations:
             try:
                 con.execute(__import__("sqlalchemy").text(
-                    f"ALTER TABLE scan_results ADD COLUMN {col} {ddl}"
+                    f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"
                 ))
                 con.commit()
             except Exception:

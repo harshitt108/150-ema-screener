@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { X, Users, TrendingDown, ChevronRight } from 'lucide-react'
+import { X, Users, TrendingDown, TrendingUp, Activity, ChevronRight, Plus, Sparkles } from 'lucide-react'
 
 const API_BASE = 'http://localhost:8000'
 
@@ -18,6 +18,12 @@ const EMA_PERIODS = [20, 50, 150, 200]
 const CONDITIONS = [
   { value: 'below', label: 'Below' },
   { value: 'above', label: 'Above' },
+]
+
+const DIRECTIONS = [
+  { value: 'down',   label: 'Drops (falls)' },
+  { value: 'up',     label: 'Rises' },
+  { value: 'either', label: 'Moves either way' },
 ]
 
 const OPERATORS = [
@@ -64,8 +70,26 @@ function TypeCard({ id, icon: Icon, title, desc, selected, onClick }) {
   )
 }
 
+function TemplateCard({ template, onUse }) {
+  return (
+    <button
+      type="button"
+      onClick={() => onUse(template)}
+      className="flex flex-col gap-1.5 p-3.5 rounded-xl border border-[#2d2d45] bg-[#13131f]
+        hover:border-violet-500/50 hover:bg-violet-500/5 text-left transition-all w-full"
+    >
+      <p className="text-sm font-semibold text-slate-200">{template.label}</p>
+      <p className="text-xs text-slate-500 leading-relaxed">{template.description}</p>
+    </button>
+  )
+}
+
 export default function CreateRuleModal({ portfolioId, holdingCount = 0, rule, onSave, onClose }) {
   const isEdit = Boolean(rule)
+
+  // Template picker is the first screen for new rules; skipped entirely when editing.
+  const [showTemplates, setShowTemplates] = useState(!isEdit)
+  const [templates, setTemplates] = useState([])
 
   const [ruleType,       setRuleType]       = useState(rule?.ruleType       ?? 'portfolio_threshold')
   const [name,           setName]           = useState(rule?.name           ?? '')
@@ -76,8 +100,55 @@ export default function CreateRuleModal({ portfolioId, holdingCount = 0, rule, o
   const [thresholdType,  setThresholdType]  = useState(rule?.thresholdType  ?? 'count')
   const [thresholdValue, setThresholdValue] = useState(rule?.thresholdValue?.toString() ?? '1')
   const [symbol,         setSymbol]         = useState(rule?.symbol         ?? '')
+
+  // Optional second condition (AND/OR) — only meaningful for stock_ema / stock_price_change
+  const [conditionBOn,        setConditionBOn]        = useState(Boolean(rule?.conditionB))
+  const [logicOp,             setLogicOp]             = useState(rule?.logicOp             ?? 'AND')
+  const [cbMetric,            setCbMetric]            = useState(rule?.conditionB?.metric   ?? 'price_change')
+  const [cbTimeframe,         setCbTimeframe]         = useState(rule?.conditionB?.timeframe ?? 'daily')
+  const [cbEmaCondition,      setCbEmaCondition]      = useState(rule?.conditionB?.metric === 'ema' ? rule.conditionB.condition : 'below')
+  const [cbEmaPeriod,         setCbEmaPeriod]         = useState(rule?.conditionB?.emaPeriod ?? 150)
+  const [cbDirection,         setCbDirection]         = useState(rule?.conditionB?.metric === 'price_change' ? rule.conditionB.condition : 'down')
+  const [cbThreshold,         setCbThreshold]         = useState(rule?.conditionB?.thresholdValue?.toString() ?? '5')
+
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
+
+  useEffect(() => {
+    if (!showTemplates) return
+    fetch(`${API_BASE}/api/rules/templates`)
+      .then(r => r.ok ? r.json() : { templates: [] })
+      .then(d => setTemplates(d.templates || []))
+      .catch(() => setTemplates([]))
+  }, [showTemplates])
+
+  const applyTemplate = (tpl) => {
+    const b = tpl.body
+    setRuleType(b.rule_type)
+    setTimeframe(b.timeframe ?? 'daily')
+    setEmaPeriod(b.ema_period ?? 150)
+    setCondition(b.condition ?? 'below')
+    setOperator(b.operator ?? 'gte')
+    setThresholdType(b.threshold_type ?? 'count')
+    setThresholdValue(b.threshold_value != null ? String(b.threshold_value) : '1')
+    setSymbol(b.symbol === '__FILL__' ? '' : (b.symbol ?? ''))
+    if (b.condition_b) {
+      setConditionBOn(true)
+      setLogicOp(b.logic_op ?? 'AND')
+      setCbMetric(b.condition_b.metric)
+      setCbTimeframe(b.condition_b.timeframe ?? 'daily')
+      if (b.condition_b.metric === 'ema') {
+        setCbEmaCondition(b.condition_b.condition)
+        setCbEmaPeriod(b.condition_b.ema_period ?? 150)
+      } else {
+        setCbDirection(b.condition_b.condition)
+        setCbThreshold(String(b.condition_b.threshold_value ?? 5))
+      }
+    } else {
+      setConditionBOn(false)
+    }
+    setShowTemplates(false)
+  }
 
   // Auto-generate name whenever key fields change (create AND edit)
   useEffect(() => {
@@ -87,38 +158,73 @@ export default function CreateRuleModal({ portfolioId, holdingCount = 0, rule, o
       const unit = thresholdType === 'percent' ? '%' : ''
       const op   = operator === 'gte' ? '≥' : operator === 'lte' ? '≤' : '='
       setName(`${op}${v}${unit} stocks ${condition} ${emaPeriod} EMA (${tf})`)
-    } else if (symbol) {
+    } else if (ruleType === 'stock_ema' && symbol) {
       setName(`${symbol} ${condition} ${emaPeriod} EMA (${tf})`)
+    } else if (ruleType === 'stock_price_change' && symbol) {
+      const verb = DIRECTIONS.find(d => d.value === condition)?.label ?? condition
+      setName(`${symbol} ${verb.toLowerCase()} ${thresholdValue || '?'}% (${tf})`)
+    } else if (ruleType === 'portfolio_price_change') {
+      const verb = DIRECTIONS.find(d => d.value === condition)?.label ?? condition
+      setName(`Any holding ${verb.toLowerCase()} ${thresholdValue || '?'}% (${tf})`)
     }
   }, [ruleType, timeframe, emaPeriod, condition, operator, thresholdType, thresholdValue, symbol])
 
   const rulePreview = () => {
     const tf = TIMEFRAMES.find(t => t.value === timeframe)?.label ?? timeframe
+    let base
     if (ruleType === 'portfolio_threshold') {
       const op   = OPERATORS.find(o => o.value === operator)?.label ?? operator
       const unit = thresholdType === 'percent' ? '%' : ' stocks'
-      return `Alert when ${thresholdValue}${unit} ${op} are ${condition} the ${emaPeriod} EMA on ${tf}`
+      base = `Alert when ${thresholdValue}${unit} ${op} are ${condition} the ${emaPeriod} EMA on ${tf}`
+    } else if (ruleType === 'stock_ema') {
+      base = `Alert when ${symbol || '?'} is ${condition} the ${emaPeriod} EMA on ${tf}`
+    } else if (ruleType === 'stock_price_change') {
+      const verb = DIRECTIONS.find(d => d.value === condition)?.label ?? condition
+      base = `Alert when ${symbol || '?'} ${verb.toLowerCase()} ${thresholdValue || '?'}% or more on ${tf}`
+    } else {
+      const verb = DIRECTIONS.find(d => d.value === condition)?.label ?? condition
+      base = `Alert when any holding ${verb.toLowerCase()} ${thresholdValue || '?'}% or more on ${tf}`
     }
-    return `Alert when ${symbol || '?'} is ${condition} the ${emaPeriod} EMA on ${tf}`
+
+    if (conditionBOn && (ruleType === 'stock_ema' || ruleType === 'stock_price_change')) {
+      const cbTf = TIMEFRAMES.find(t => t.value === cbTimeframe)?.label ?? cbTimeframe
+      const cbDesc = cbMetric === 'ema'
+        ? `is ${cbEmaCondition} the ${cbEmaPeriod} EMA on ${cbTf}`
+        : `${DIRECTIONS.find(d => d.value === cbDirection)?.label?.toLowerCase() ?? cbDirection} ${cbThreshold || '?'}% or more on ${cbTf}`
+      base = `${base} ${logicOp} ${cbDesc}`
+    }
+    return base
   }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     if (!name.trim()) { setError('Rule name is required'); return }
-    if (ruleType === 'stock_ema' && !symbol.trim()) { setError('Symbol is required'); return }
+    if ((ruleType === 'stock_ema' || ruleType === 'stock_price_change') && !symbol.trim()) {
+      setError('Symbol is required'); return
+    }
 
     setSaving(true); setError(null)
     try {
+      const isPriceChange = ruleType === 'stock_price_change' || ruleType === 'portfolio_price_change'
       const body = {
         name:             name.trim(),
         rule_type:        ruleType,
         timeframe,
-        ema_period:       Number(emaPeriod),
+        ema_period:       isPriceChange ? 0 : Number(emaPeriod),
         condition,
         operator:         ruleType === 'portfolio_threshold' ? operator : null,
         threshold_type:   ruleType === 'portfolio_threshold' ? thresholdType : null,
-        threshold_value:  ruleType === 'portfolio_threshold' ? Number(thresholdValue) : null,
-        symbol:           ruleType === 'stock_ema' ? symbol.trim().toUpperCase() : null,
+        threshold_value:  (ruleType === 'portfolio_threshold' || isPriceChange) ? Number(thresholdValue) : null,
+        symbol:            (ruleType === 'stock_ema' || ruleType === 'stock_price_change') ? symbol.trim().toUpperCase() : null,
+        condition_b:      null,
+        logic_op:         null,
+      }
+
+      if (conditionBOn && (ruleType === 'stock_ema' || ruleType === 'stock_price_change')) {
+        body.condition_b = cbMetric === 'ema'
+          ? { metric: 'ema', timeframe: cbTimeframe, condition: cbEmaCondition, ema_period: Number(cbEmaPeriod) }
+          : { metric: 'price_change', timeframe: cbTimeframe, condition: cbDirection, threshold_value: Number(cbThreshold) }
+        body.logic_op = logicOp
       }
 
       const url = isEdit
@@ -134,6 +240,43 @@ export default function CreateRuleModal({ portfolioId, holdingCount = 0, rule, o
     } catch (e) { setError(e.message) }
     finally { setSaving(false) }
   }
+
+  // ── Template picker screen ────────────────────────────────────────────────
+  if (showTemplates) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+        <div className="bg-[#0f0f1a] border border-[#2d2d45] rounded-2xl w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-[#1e1e30] sticky top-0 bg-[#0f0f1a] z-10">
+            <h2 className="text-base font-semibold text-white flex items-center gap-2">
+              <Sparkles size={16} className="text-violet-400" /> Start from a template
+            </h2>
+            <button onClick={onClose} className="p-1.5 rounded-lg text-slate-500 hover:text-slate-300 hover:bg-[#1e1e30]">
+              <X size={16} />
+            </button>
+          </div>
+          <div className="px-6 py-5 space-y-2.5">
+            <p className="text-xs text-slate-500 mb-1">
+              Pick a common rule to start from, or build one from scratch.
+            </p>
+            {templates.map(t => (
+              <TemplateCard key={t.key} template={t} onUse={applyTemplate} />
+            ))}
+            <button
+              type="button"
+              onClick={() => setShowTemplates(false)}
+              className="w-full flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl border
+                border-dashed border-[#2d2d45] text-slate-400 hover:text-slate-200 hover:border-[#3d3d55]
+                text-sm font-medium transition-colors mt-2"
+            >
+              <Plus size={14} /> Build a custom rule
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const canCombine = ruleType === 'stock_ema' || ruleType === 'stock_price_change'
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
@@ -162,9 +305,23 @@ export default function CreateRuleModal({ portfolioId, holdingCount = 0, rule, o
                 />
                 <TypeCard
                   id="stock_ema" icon={TrendingDown}
-                  title="Individual Stock"
+                  title="Individual Stock — EMA"
                   desc="Alert when a specific stock is above or below an EMA on a given timeframe."
                   selected={ruleType === 'stock_ema'}
+                  onClick={setRuleType}
+                />
+                <TypeCard
+                  id="stock_price_change" icon={Activity}
+                  title="Individual Stock — % Move"
+                  desc="Alert when a specific stock drops (or rises) a given % in one bar — catches sharp moves an EMA cross might miss."
+                  selected={ruleType === 'stock_price_change'}
+                  onClick={setRuleType}
+                />
+                <TypeCard
+                  id="portfolio_price_change" icon={TrendingUp}
+                  title="Any Holding — % Move"
+                  desc="Alert when ANY stock in the portfolio drops (or rises) a given % in one bar — no need to name every stock."
+                  selected={ruleType === 'portfolio_price_change'}
                   onClick={setRuleType}
                 />
               </div>
@@ -238,10 +395,116 @@ export default function CreateRuleModal({ portfolioId, holdingCount = 0, rule, o
               </div>
             )}
 
+            {ruleType === 'stock_price_change' && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm text-slate-400">When</span>
+                <input
+                  type="text"
+                  value={symbol}
+                  onChange={e => setSymbol(e.target.value.toUpperCase())}
+                  placeholder="SYMBOL"
+                  className="w-28 bg-[#0f0f1a] border border-[#2d2d45] rounded-lg px-2 py-1.5 text-sm
+                    text-white font-mono placeholder-slate-600 focus:outline-none focus:border-violet-500/60"
+                />
+                <Select value={condition} onChange={setCondition} options={DIRECTIONS} />
+                <input
+                  type="number" min="0.5" step="0.5"
+                  value={thresholdValue}
+                  onChange={e => setThresholdValue(e.target.value)}
+                  className="w-16 bg-[#0f0f1a] border border-[#2d2d45] rounded-lg px-2 py-1.5 text-sm
+                    text-white text-center focus:outline-none focus:border-violet-500/60"
+                />
+                <span className="text-sm text-slate-400">% or more on</span>
+                <Select value={timeframe} onChange={setTimeframe} options={TIMEFRAMES} />
+              </div>
+            )}
+
+            {ruleType === 'portfolio_price_change' && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm text-slate-400">When any holding</span>
+                <Select value={condition} onChange={setCondition} options={DIRECTIONS} />
+                <input
+                  type="number" min="0.5" step="0.5"
+                  value={thresholdValue}
+                  onChange={e => setThresholdValue(e.target.value)}
+                  className="w-16 bg-[#0f0f1a] border border-[#2d2d45] rounded-lg px-2 py-1.5 text-sm
+                    text-white text-center focus:outline-none focus:border-violet-500/60"
+                />
+                <span className="text-sm text-slate-400">% or more on</span>
+                <Select value={timeframe} onChange={setTimeframe} options={TIMEFRAMES} />
+              </div>
+            )}
+
+            {/* Optional second condition */}
+            {canCombine && (
+              <div className="pt-3 border-t border-[#1e1e30]">
+                {!conditionBOn ? (
+                  <button
+                    type="button"
+                    onClick={() => setConditionBOn(true)}
+                    className="flex items-center gap-1.5 text-xs text-violet-400 hover:text-violet-300 font-medium"
+                  >
+                    <Plus size={12} /> Add a second condition (AND / OR)
+                  </button>
+                ) : (
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-slate-500">Combine with:</span>
+                        <Select
+                          value={logicOp} onChange={setLogicOp}
+                          options={[{ value: 'AND', label: 'AND (both must be true)' }, { value: 'OR', label: 'OR (either can be true)' }]}
+                          className="text-xs py-1.5"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setConditionBOn(false)}
+                        className="text-xs text-slate-500 hover:text-rose-400"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Select
+                        value={cbMetric} onChange={setCbMetric}
+                        options={[{ value: 'price_change', label: '% move' }, { value: 'ema', label: 'EMA position' }]}
+                      />
+                      {cbMetric === 'ema' ? (
+                        <>
+                          <span className="text-sm text-slate-400">is</span>
+                          <Select value={cbEmaCondition} onChange={setCbEmaCondition} options={CONDITIONS} />
+                          <Select
+                            value={cbEmaPeriod}
+                            onChange={v => setCbEmaPeriod(Number(v))}
+                            options={EMA_PERIODS.map(p => ({ value: p, label: `${p} EMA` }))}
+                          />
+                        </>
+                      ) : (
+                        <>
+                          <Select value={cbDirection} onChange={setCbDirection} options={DIRECTIONS} />
+                          <input
+                            type="number" min="0.5" step="0.5"
+                            value={cbThreshold}
+                            onChange={e => setCbThreshold(e.target.value)}
+                            className="w-16 bg-[#0f0f1a] border border-[#2d2d45] rounded-lg px-2 py-1.5 text-sm
+                              text-white text-center focus:outline-none focus:border-violet-500/60"
+                          />
+                          <span className="text-sm text-slate-400">%</span>
+                        </>
+                      )}
+                      <span className="text-sm text-slate-400">on</span>
+                      <Select value={cbTimeframe} onChange={setCbTimeframe} options={TIMEFRAMES} />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Preview sentence */}
             <div className="mt-2 pt-3 border-t border-[#1e1e30]">
               <p className="text-xs text-slate-500 flex items-center gap-1.5">
-                <ChevronRight size={11} className="text-violet-400" />
+                <ChevronRight size={11} className="text-violet-400 flex-shrink-0" />
                 {rulePreview()}
               </p>
             </div>

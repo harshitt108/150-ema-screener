@@ -1201,9 +1201,20 @@ function RulesSection({ rules, violations, portfolioId, holdingCount, onAdd, onE
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1e1e30] text-slate-500 font-mono">
                         {TIMEFRAME_LABEL[rule.timeframe] || rule.timeframe}
                       </span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-400">
-                        {rule.emaPeriod} EMA
-                      </span>
+                      {(rule.ruleType === 'portfolio_threshold' || rule.ruleType === 'stock_ema') ? (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-400">
+                          {rule.emaPeriod} EMA
+                        </span>
+                      ) : (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-400">
+                          {rule.condition === 'down' ? '↓' : rule.condition === 'up' ? '↑' : '±'}{rule.thresholdValue}%
+                        </span>
+                      )}
+                      {rule.conditionB && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#1e1e30] text-slate-400 font-mono">
+                          {rule.logicOp}+1
+                        </span>
+                      )}
                       {isTriggered && (
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 font-medium">
                           ⚡ Triggered
@@ -1287,7 +1298,7 @@ function RulesSection({ rules, violations, portfolioId, holdingCount, onAdd, onE
                         </div>
                       )}
                     </>
-                  ) : (
+                  ) : v.ruleType === 'stock_ema' ? (
                     <>
                       <span className="text-rose-300 font-mono">{v.symbol}</span>
                       {' '}is {v.condition}{' '}
@@ -1296,6 +1307,46 @@ function RulesSection({ rules, violations, portfolioId, holdingCount, onAdd, onE
                       <span className="text-rose-400 font-mono">
                         ({v.dist >= 0 ? '+' : ''}{v.dist?.toFixed(1)}%)
                       </span>
+                      {v.conditionB && (
+                        <span className="text-slate-500"> {v.logicOp} {v.conditionB.metric === 'price_change'
+                          ? <>moved <span className="text-rose-400 font-mono">{v.conditionB.pct}%</span></>
+                          : <>is {v.conditionB.condition} {v.conditionB.emaPeriod} EMA</>}
+                        </span>
+                      )}
+                    </>
+                  ) : v.ruleType === 'stock_price_change' ? (
+                    <>
+                      <span className="text-rose-300 font-mono">{v.symbol}</span>
+                      {' '}moved{' '}
+                      <span className="text-rose-400 font-mono font-semibold">
+                        {v.pctChange >= 0 ? '+' : ''}{v.pctChange}%
+                      </span>
+                      {' '}(₹{v.prevPrice} → ₹{v.currentPrice}) on {TIMEFRAME_LABEL[v.timeframe] || v.timeframe}
+                      {v.conditionB && (
+                        <span className="text-slate-500"> {v.logicOp} {v.conditionB.metric === 'ema'
+                          ? <>is {v.conditionB.condition} {v.conditionB.emaPeriod} EMA</>
+                          : <>moved <span className="text-rose-400 font-mono">{v.conditionB.pct}%</span></>}
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-amber-300 font-semibold">{v.breakdown?.length || 0}</span>
+                      {' '}holding{v.breakdown?.length === 1 ? '' : 's'} moved {v.threshold}%+ on {TIMEFRAME_LABEL[v.timeframe] || v.timeframe}
+                      {v.breakdown?.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mt-1.5">
+                          {v.breakdown.map(b => (
+                            <span key={b.symbol}
+                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full
+                                bg-rose-500/10 border border-rose-500/25 text-rose-300 font-mono text-[11px]">
+                              {b.symbol}
+                              <span className="text-rose-500 text-[10px]">
+                                {b.pctChange >= 0 ? '+' : ''}{b.pctChange}%
+                              </span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </>
                   )}
                 </div>

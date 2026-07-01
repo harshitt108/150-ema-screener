@@ -1,9 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
-import { X, TrendingUp, TrendingDown, Loader, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react'
+import { X, TrendingUp, Loader, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react'
 import CandleChart from './CandleChart'
 import DrawingOverlay from './DrawingOverlay'
 import AddToWatchlist from './AddToWatchlist'
 import ChartErrorBoundary from './ChartErrorBoundary'
+import Accordion from './Accordion'
+import BullBearFactors from './BullBearFactors'
+import MTFMatrix from './MTFMatrix'
+import SignalHistoryList from './SignalHistoryList'
+import RatingHistoryChart from './RatingHistoryChart'
+import CompareStocks from './CompareStocks'
+import FinancialScan from './FinancialScan'
 
 // Fills the flex container, measures real height, passes it to CandleChart.
 // Waits 230ms before the first measurement so the panel's slide-in animation
@@ -71,21 +78,6 @@ function SignalBanner({ signals }) {
   )
 }
 
-// ─── Condition card ──────────────────────────────────────────────────────────
-function CondCard({ label, bull, val }) {
-  const color = bull ? 'text-emerald-400' : 'text-rose-400'
-  const Icon  = bull ? TrendingUp : TrendingDown
-  return (
-    <div className="bg-[#111120] border border-[#1e1e30] rounded-lg p-3 flex flex-col gap-1">
-      <p className="text-[10px] font-medium text-slate-500 uppercase tracking-wider leading-tight">{label}</p>
-      <div className="flex items-center gap-1.5">
-        <Icon size={13} className={color} />
-        <span className={`text-sm font-semibold ${color}`}>{val}</span>
-      </div>
-    </div>
-  )
-}
-
 
 const TIMEFRAMES = [
   { value: '5min',    label: '5m'  },
@@ -105,6 +97,21 @@ export default function StockDetailPanel({ stock, timeframe: initialTimeframe, o
   const [error,      setError]      = useState(null)
   const chartApiRef    = useRef(null)
   const [chartVersion, setChartVersion] = useState(0)
+
+  // Multi-timeframe matrix, signal history and rating history are independent
+  // of the chart's own timeframe switcher — they only depend on the stock and
+  // benchmark, so they're fetched once per stock rather than on every tf change.
+  const [mtfMatrix,     setMtfMatrix]     = useState(null)
+  const [signalHistory, setSignalHistory] = useState(null)
+  const [ratingHistory, setRatingHistory] = useState(null)
+  // Financials are fetched lazily by <FinancialScan> itself, only when the user
+  // expands that section — so the screener.in scrape isn't fired on panel open.
+
+  // stock.signals (passed in from the scan results row) is a snapshot frozen
+  // at scan time — it never reflects the timeframe the user picks inside this
+  // panel, and goes stale as soon as price moves after the scan ran. Refetch
+  // live signals for whichever timeframe/benchmark is currently selected.
+  const [liveSignals, setLiveSignals] = useState(null)
 
   // When parent navigates to a different stock, reset timeframe to the parent's default
   useEffect(() => {
@@ -139,18 +146,50 @@ export default function StockDetailPanel({ stock, timeframe: initialTimeframe, o
     return () => { cancelled = true }
   }, [stock?.symbol, timeframe, stock?.benchmark])
 
+  useEffect(() => {
+    if (!stock) return
+    let cancelled = false
+    setLiveSignals(null)
+    const bench = encodeURIComponent(stock.benchmark || 'NIFTY 50')
+    const sym   = encodeURIComponent(stock.symbol)
+    fetch(`${API_BASE}/api/signals/${sym}?timeframe=${timeframe}&benchmark=${bench}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (!cancelled) setLiveSignals(d) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [stock?.symbol, timeframe, stock?.benchmark])
+
+  useEffect(() => {
+    if (!stock) return
+    let cancelled = false
+    setMtfMatrix(null); setSignalHistory(null); setRatingHistory(null)
+    const bench = encodeURIComponent(stock.benchmark || 'NIFTY 50')
+    const sym   = encodeURIComponent(stock.symbol)
+
+    fetch(`${API_BASE}/api/mtf-matrix/${sym}?benchmark=${bench}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (!cancelled) setMtfMatrix(d) })
+      .catch(() => {})
+
+    fetch(`${API_BASE}/api/signal-history/${sym}?timeframe=daily&benchmark=${bench}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (!cancelled) setSignalHistory(d) })
+      .catch(() => {})
+
+    fetch(`${API_BASE}/api/rating-history/${sym}?timeframe=daily&benchmark=${bench}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (!cancelled) setRatingHistory(d) })
+      .catch(() => {})
+
+    return () => { cancelled = true }
+  }, [stock?.symbol, stock?.benchmark])
+
   if (!stock) return null
 
-  const signals   = stock.signals
+  // Prefer freshly-fetched live signals for the current timeframe; fall back
+  // to the scan-time snapshot only for the brief moment before they arrive.
+  const signals   = liveSignals || stock.signals
   const conditions = signals?.conditions ?? {}
-
-  // Split conditions into price/technical vs ratio
-  const priceConditions = Object.fromEntries(
-    Object.entries(conditions).filter(([k]) => !k.startsWith('ratio_'))
-  )
-  const ratioConditions = chartData?.ratioConditions   // from chart API (always fresh)
-
-  const benchmark = chartData?.benchmark || stock.benchmark || 'NIFTY 50'
 
   // Latest EMA values for legend
   return (
@@ -290,107 +329,41 @@ export default function StockDetailPanel({ stock, timeframe: initialTimeframe, o
             </div>
           </div>
 
-          {/* ── Right: Signals sidebar (fixed 340px, scrollable) ─────────── */}
-          <div className="w-[340px] flex-shrink-0 border-l border-[#1e1e30] overflow-y-auto p-4 space-y-4">
+          {/* ── Right: Signals sidebar (widened, scrollable, accordion sections) ─── */}
+          <div className="w-[520px] flex-shrink-0 border-l border-[#1e1e30] overflow-y-auto p-4 space-y-3">
 
-            {/* Signal banner */}
+            {/* Signal banner — always visible, unchanged */}
             {signals && <SignalBanner signals={signals} />}
 
-            {/* Ratio vs Benchmark */}
-            <div>
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
-                Ratio vs {benchmark}
-              </p>
-              {ratioConditions ? (
-                <div className="grid grid-cols-3 gap-1.5">
-                  {[
-                    { key: 'ema20',  label: 'Ratio > 20 EMA'  },
-                    { key: 'ema50',  label: 'Ratio > 50 EMA'  },
-                    { key: 'ema150', label: 'Ratio > 150 EMA' },
-                  ].map(({ key, label }) => {
-                    const d = ratioConditions[key]
-                    if (!d) return (
-                      <div key={key} className="bg-[#111120] border border-[#1e1e30] rounded-lg p-2.5">
-                        <p className="text-[9px] font-medium text-slate-500 uppercase tracking-wider mb-1">{label}</p>
-                        <span className="text-slate-600 text-xs">—</span>
-                      </div>
-                    )
-                    return (
-                      <div key={key} className={`rounded-lg p-2.5 border ${d.above ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-rose-500/10 border-rose-500/30'}`}>
-                        <p className="text-[9px] font-medium text-slate-400 uppercase tracking-wider leading-tight mb-1">{label}</p>
-                        <div className="flex items-baseline gap-1">
-                          <span className={`text-base font-bold ${d.above ? 'text-emerald-400' : 'text-rose-400'}`}>{d.above ? '▲' : '▼'}</span>
-                          <span className={`text-xs font-semibold font-mono ${d.above ? 'text-emerald-400' : 'text-rose-400'}`}>{d.dist >= 0 ? '+' : ''}{d.dist}%</span>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              ) : (
-                <div className="h-12 flex items-center justify-center bg-[#111120] border border-[#1e1e30] rounded-lg">
-                  <span className="text-xs text-slate-600">Loading…</span>
-                </div>
-              )}
-            </div>
+            {/* Multi-timeframe matrix */}
+            <Accordion title="Multi-Timeframe Matrix">
+              <MTFMatrix matrix={mtfMatrix} />
+            </Accordion>
 
-            {/* Signal Conditions */}
-            {Object.keys(priceConditions).length > 0 && (
-              <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
-                  Signal Conditions
-                </p>
-                <div className="grid grid-cols-2 gap-1.5">
-                  {Object.entries(priceConditions).map(([key, cond]) => (
-                    <CondCard key={key} label={cond.label} bull={cond.bull} val={cond.val} />
-                  ))}
-                </div>
-              </div>
-            )}
+            {/* Bullish / bearish factors */}
+            <Accordion title="Bullish / Bearish Factors">
+              <BullBearFactors conditions={conditions} />
+            </Accordion>
 
-            {/* EMA Structure */}
-            {(stock.priceEmas || stock.ratioEmas) && (
-              <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
-                  EMA Structure ({timeframe})
-                </p>
-                <div className="space-y-2">
-                  {stock.priceEmas && (
-                    <div className="bg-[#111120] border border-[#1e1e30] rounded-lg p-2.5">
-                      <p className="text-[9px] text-slate-500 uppercase tracking-wider mb-1.5">Price</p>
-                      {[['ema20','20 EMA'],['ema50','50 EMA'],['ema150','150 EMA']].map(([k,lbl]) => {
-                        const d = stock.priceEmas[k]
-                        if (!d) return null
-                        return (
-                          <div key={k} className="flex justify-between text-xs py-0.5">
-                            <span className="text-slate-500">{lbl}</span>
-                            <span className={d.above ? 'text-emerald-400 font-mono' : 'text-rose-400 font-mono'}>
-                              {d.above ? '▲' : '▼'} {d.dist > 0 ? '+' : ''}{d.dist}%
-                            </span>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-                  {stock.ratioEmas && (
-                    <div className="bg-[#111120] border border-[#1e1e30] rounded-lg p-2.5">
-                      <p className="text-[9px] text-slate-500 uppercase tracking-wider mb-1.5">Ratio vs {stock.benchmark}</p>
-                      {[['ema20','20 EMA'],['ema50','50 EMA'],['ema150','150 EMA']].map(([k,lbl]) => {
-                        const d = stock.ratioEmas[k]
-                        if (!d) return null
-                        return (
-                          <div key={k} className="flex justify-between text-xs py-0.5">
-                            <span className="text-slate-500">{lbl}</span>
-                            <span className={d.above ? 'text-emerald-400 font-mono' : 'text-rose-400 font-mono'}>
-                              {d.above ? '▲' : '▼'} {d.dist > 0 ? '+' : ''}{d.dist}%
-                            </span>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
+            {/* Signal history */}
+            <Accordion title="Signal History" badge="Daily">
+              <SignalHistoryList history={signalHistory} />
+            </Accordion>
+
+            {/* Rating history */}
+            <Accordion title="Rating History" badge="Daily">
+              <RatingHistoryChart ratingHistory={ratingHistory} />
+            </Accordion>
+
+            {/* Financial scan — quarterly EPS/Sales YoY */}
+            <Accordion title="Financial Scan" badge="Quarterly" defaultOpen={false}>
+              <FinancialScan symbol={stock.symbol} />
+            </Accordion>
+
+            {/* Compare stocks */}
+            <Accordion title="Compare Stocks" defaultOpen={false}>
+              <CompareStocks baseSymbol={stock.symbol} benchmark={stock.benchmark || 'NIFTY 50'} />
+            </Accordion>
 
           </div>{/* end right sidebar */}
         </div>{/* end two-column body */}

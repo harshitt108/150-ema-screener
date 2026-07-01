@@ -1,8 +1,10 @@
 """
-Rule engine — evaluates MonitoringRule instances against live EMA data.
+Rule engine — evaluates MonitoringRule instances against live EMA and
+price-change data.
 """
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -10,6 +12,8 @@ from sqlalchemy.orm import Session
 
 from database import MonitoringRule, RuleAlert, Portfolio
 from scan_engine import fetch_all_ema_status
+from scanner import TIMEFRAME_MAP
+from data_fetcher import fetch_ohlcv
 
 logger = logging.getLogger(__name__)
 
@@ -44,19 +48,107 @@ def _eval_operator(value: float, operator: str, threshold: float) -> bool:
     return False
 
 
+def _pct_change_satisfies(pct: float, direction: str, threshold_value: float) -> bool:
+    """direction: 'down' (pct <= -threshold), 'up' (pct >= threshold), 'either' (abs(pct) >= threshold)."""
+    if direction == "down":
+        return pct <= -threshold_value
+    if direction == "up":
+        return pct >= threshold_value
+    if direction == "either":
+        return abs(pct) >= threshold_value
+    return False
+
+
+def fetch_pct_change(symbol: str, timeframe: str) -> Optional[dict]:
+    """% change of the latest closed bar vs the previous bar, on `timeframe`.
+    Returns {"pct": float, "price": float, "prevPrice": float} or None."""
+    if timeframe not in TIMEFRAME_MAP:
+        return None
+    interval, period = TIMEFRAME_MAP[timeframe]
+    try:
+        df = fetch_ohlcv(f"{symbol}.NS", interval, period)
+    except Exception as e:
+        logger.error(f"fetch_pct_change({symbol}, {timeframe}) failed: {e}")
+        return None
+    if df is None or len(df) < 2:
+        return None
+    price      = float(df["Close"].iloc[-1])
+    prev_price = float(df["Close"].iloc[-2])
+    if prev_price == 0:
+        return None
+    pct = (price - prev_price) / prev_price * 100
+    return {"pct": round(pct, 2), "price": round(price, 2), "prevPrice": round(prev_price, 2)}
+
+
+def _condition_b_satisfies(symbol: str, condition_b: dict) -> tuple[bool, dict]:
+    """Evaluate the optional second condition for `symbol`. Returns (satisfies, detail)."""
+    metric = condition_b.get("metric")
+    tf = condition_b.get("timeframe", "daily")
+
+    if metric == "ema":
+        status_map, _ = fetch_all_ema_status([symbol], timeframe=tf)
+        st = status_map.get(symbol)
+        ema_info = st["ema"].get(str(condition_b.get("ema_period"))) if st else None
+        if not ema_info:
+            return False, {"metric": "ema", "available": False}
+        is_above = ema_info["above"]
+        satisfies = (condition_b.get("condition") == "above" and is_above) or \
+                    (condition_b.get("condition") == "below" and not is_above)
+        return satisfies, {"metric": "ema", "emaPeriod": condition_b.get("ema_period"),
+                            "condition": condition_b.get("condition"), "dist": ema_info["dist"],
+                            "timeframe": tf}
+
+    if metric == "price_change":
+        chg = fetch_pct_change(symbol, tf)
+        if not chg:
+            return False, {"metric": "price_change", "available": False}
+        satisfies = _pct_change_satisfies(chg["pct"], condition_b.get("condition"),
+                                           condition_b.get("threshold_value", 0))
+        return satisfies, {"metric": "price_change", "condition": condition_b.get("condition"),
+                            "threshold": condition_b.get("threshold_value"), "pct": chg["pct"],
+                            "timeframe": tf}
+
+    return False, {"metric": metric, "available": False}
+
+
 def describe_rule(rule: MonitoringRule) -> str:
     """Human-readable one-liner for a rule."""
     tf  = TIMEFRAME_LABELS.get(rule.timeframe, rule.timeframe)
-    cnd = rule.condition  # above | below
+    cnd = rule.condition
 
     if rule.rule_type == "portfolio_threshold":
         op  = OPERATOR_LABELS.get(rule.operator, rule.operator)
         val = int(rule.threshold_value) if rule.threshold_type == "count" \
               else f"{rule.threshold_value:.0f}%"
-        return f"When {val} stocks {op} are {cnd} {rule.ema_period} EMA on {tf}"
-    else:
+        base = f"When {val} stocks {op} are {cnd} {rule.ema_period} EMA on {tf}"
+    elif rule.rule_type == "stock_ema":
         sym = rule.symbol or "?"
-        return f"When {sym} is {cnd} {rule.ema_period} EMA on {tf}"
+        base = f"When {sym} is {cnd} {rule.ema_period} EMA on {tf}"
+    elif rule.rule_type == "stock_price_change":
+        sym = rule.symbol or "?"
+        verb = {"down": "drops", "up": "rises", "either": "moves"}.get(cnd, "moves")
+        base = f"When {sym} {verb} {rule.threshold_value:.0f}% or more on {tf}"
+    elif rule.rule_type == "portfolio_price_change":
+        verb = {"down": "drops", "up": "rises", "either": "moves"}.get(cnd, "moves")
+        base = f"When any holding {verb} {rule.threshold_value:.0f}% or more on {tf}"
+    else:
+        base = rule.name
+
+    if rule.condition_b_json and rule.logic_op:
+        try:
+            cb = json.loads(rule.condition_b_json)
+        except (TypeError, ValueError):
+            cb = {}
+        if cb.get("metric") == "ema":
+            cb_desc = f"is {cb.get('condition')} {cb.get('ema_period')} EMA on {TIMEFRAME_LABELS.get(cb.get('timeframe'), cb.get('timeframe'))}"
+        elif cb.get("metric") == "price_change":
+            verb = {"down": "drops", "up": "rises", "either": "moves"}.get(cb.get("condition"), "moves")
+            cb_desc = f"{verb} {cb.get('threshold_value', 0):.0f}% or more on {TIMEFRAME_LABELS.get(cb.get('timeframe'), cb.get('timeframe'))}"
+        else:
+            cb_desc = "…"
+        base = f"{base} {rule.logic_op} {cb_desc}"
+
+    return base
 
 
 # ─── Core evaluation ──────────────────────────────────────────────────────────
@@ -80,13 +172,16 @@ def check_rule(rule: MonitoringRule, db: Session) -> Optional[dict]:
     # Update last_checked_at
     rule.last_checked_at = now
 
-    # Fetch live EMA data for this timeframe
-    try:
-        status_map, no_data = fetch_all_ema_status(symbols, timeframe=rule.timeframe)
-    except Exception as e:
-        logger.error(f"[rule {rule.id}] fetch failed: {e}")
-        db.commit()
-        return None
+    # EMA data is only needed for the two EMA-based rule types — price-change
+    # types fetch their own OHLC independently via fetch_pct_change().
+    status_map = {}
+    if rule.rule_type in ("portfolio_threshold", "stock_ema"):
+        try:
+            status_map, _no_data = fetch_all_ema_status(symbols, timeframe=rule.timeframe)
+        except Exception as e:
+            logger.error(f"[rule {rule.id}] fetch failed: {e}")
+            db.commit()
+            return None
 
     period_key = str(rule.ema_period)
     violation: Optional[dict] = None
@@ -137,40 +232,110 @@ def check_rule(rule: MonitoringRule, db: Session) -> Optional[dict]:
                 "description":   describe_rule(rule),
             }
 
-    # ── Individual stock EMA ───────────────────────────────────────────────
-    elif rule.rule_type == "stock_ema":
+    # ── Individual stock EMA / % price change ──────────────────────────────
+    # Both are single-symbol, single-condition primary checks that can be
+    # combined with an optional condition B — so the primary payload and its
+    # satisfies flag are computed unconditionally, and the fire decision is
+    # deferred to the combine step below (needed for correct OR semantics:
+    # a rule should also fire when ONLY condition B is true).
+    elif rule.rule_type in ("stock_ema", "stock_price_change"):
         sym = rule.symbol
         if not sym:
             db.commit()
             return None
 
-        st = status_map.get(sym)
-        if not st:
+        primary_satisfies = False
+        primary_payload = None
+
+        if rule.rule_type == "stock_ema":
+            st = status_map.get(sym)
+            ema_info = st["ema"].get(period_key) if st else None
+            if st and ema_info:
+                is_above = ema_info["above"]
+                primary_satisfies = (rule.condition == "above" and is_above) or \
+                                    (rule.condition == "below" and not is_above)
+                primary_payload = {
+                    "ruleId":       rule.id,
+                    "ruleName":     rule.name,
+                    "ruleType":     "stock_ema",
+                    "timeframe":    rule.timeframe,
+                    "emaPeriod":    rule.ema_period,
+                    "condition":    rule.condition,
+                    "symbol":       sym,
+                    "currentPrice": st["currentPrice"],
+                    "emaValue":     ema_info["value"],
+                    "dist":         ema_info["dist"],
+                    "description":  describe_rule(rule),
+                }
+        else:
+            chg = fetch_pct_change(sym, rule.timeframe)
+            if chg:
+                primary_satisfies = _pct_change_satisfies(chg["pct"], rule.condition, rule.threshold_value)
+                primary_payload = {
+                    "ruleId":       rule.id,
+                    "ruleName":     rule.name,
+                    "ruleType":     "stock_price_change",
+                    "timeframe":    rule.timeframe,
+                    "condition":    rule.condition,
+                    "threshold":    rule.threshold_value,
+                    "symbol":       sym,
+                    "currentPrice": chg["price"],
+                    "prevPrice":    chg["prevPrice"],
+                    "pctChange":    chg["pct"],
+                    "description":  describe_rule(rule),
+                }
+
+        if primary_payload is None:
             db.commit()
             return None
 
-        ema_info = st["ema"].get(period_key)
-        if not ema_info:
-            db.commit()
-            return None
+        # No condition B — behave exactly as before (fire iff primary is true)
+        condition_b = None
+        if rule.condition_b_json and rule.logic_op:
+            try:
+                condition_b = json.loads(rule.condition_b_json)
+            except (TypeError, ValueError):
+                condition_b = None
 
-        is_above   = ema_info["above"]
-        satisfies  = (rule.condition == "above" and is_above) or \
-                     (rule.condition == "below" and not is_above)
+        if not condition_b:
+            violation = primary_payload if primary_satisfies else None
+        else:
+            satisfies_b, detail_b = _condition_b_satisfies(sym, condition_b)
+            combined = (primary_satisfies and satisfies_b) if rule.logic_op == "AND" \
+                       else (primary_satisfies or satisfies_b)
+            if combined:
+                violation = dict(primary_payload)
+                violation["conditionB"] = detail_b
+                violation["logicOp"]    = rule.logic_op
 
-        if satisfies:
+    # ── Any-holding % price change ─────────────────────────────────────────
+    elif rule.rule_type == "portfolio_price_change":
+        breakdown = []
+        with ThreadPoolExecutor(max_workers=10) as ex:
+            changes = dict(zip(symbols, ex.map(lambda s: fetch_pct_change(s, rule.timeframe), symbols)))
+
+        for sym in symbols:
+            chg = changes.get(sym)
+            if not chg:
+                continue
+            if _pct_change_satisfies(chg["pct"], rule.condition, rule.threshold_value):
+                breakdown.append({
+                    "symbol":    sym,
+                    "price":     chg["price"],
+                    "prevPrice": chg["prevPrice"],
+                    "pctChange": chg["pct"],
+                })
+
+        if breakdown:
             violation = {
-                "ruleId":       rule.id,
-                "ruleName":     rule.name,
-                "ruleType":     "stock_ema",
-                "timeframe":    rule.timeframe,
-                "emaPeriod":    rule.ema_period,
-                "condition":    rule.condition,
-                "symbol":       sym,
-                "currentPrice": st["currentPrice"],
-                "emaValue":     ema_info["value"],
-                "dist":         ema_info["dist"],
-                "description":  describe_rule(rule),
+                "ruleId":     rule.id,
+                "ruleName":   rule.name,
+                "ruleType":   "portfolio_price_change",
+                "timeframe":  rule.timeframe,
+                "condition":  rule.condition,
+                "threshold":  rule.threshold_value,
+                "breakdown":  breakdown[:20],
+                "description": describe_rule(rule),
             }
 
     # ── Persist if triggered ──────────────────────────────────────────────

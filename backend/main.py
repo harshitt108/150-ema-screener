@@ -4,11 +4,13 @@ from pydantic import BaseModel, Field
 from typing import Optional
 import logging
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from indices import INDEX_NAMES, get_symbols
-from scanner import scan_stocks, calculate_ema, TIMEFRAME_MAP
-from rs_scanner import scan_rs_stocks, BENCHMARK_NAMES, BENCHMARK_MAP, _compute_ratio, _normalize_index
-from data_fetcher import fetch_ohlcv
-from indicators import compute_signals
+from scanner import scan_stocks, calculate_ema, calculate_avg_volume, TIMEFRAME_MAP
+from rs_scanner import scan_rs_stocks, BENCHMARK_NAMES, BENCHMARK_MAP, _compute_ratio, _normalize_index, _rs_trend
+from data_fetcher import fetch_ohlcv, SESSION
+from indicators import compute_signals, compute_mtf_snapshot, compute_signal_history, compute_rating_history, rsi as calc_rsi
 from database import init_db
 from portfolio_routes import router as portfolio_router
 from monitoring_routes import router as monitoring_router
@@ -151,7 +153,11 @@ _CHART_RANGE = {
                         # for stocks whose history predates it (clamps start to IPO,
                         # exceeding the window) — the standard "2y" token is safe.
     "daily":   "5y",
-    "weekly":  "max",
+    "weekly":  "20y",   # NOT "max" — for long-listed stocks Yahoo silently
+                        # downgrades a "1wk" interval request to monthly
+                        # granularity once the range spans back to IPO. "20y"
+                        # stays under that threshold (verified against RELIANCE,
+                        # NSE's longest history) while still giving ~1000 bars.
     "monthly": "max",
 }
 
@@ -377,6 +383,219 @@ def get_signals(symbol: str, timeframe: str = "daily", benchmark: str = "NIFTY 5
             ratio = _compute_ratio(df, bench_df, interval)
 
     return compute_signals(df, ratio)
+
+
+# ── Multi-timeframe matrix ───────────────────────────────────────────────────
+
+_MTF_TIMEFRAMES = ["5min", "15min", "30min", "1h", "daily", "weekly", "monthly"]
+_MTF_LABELS = {"5min": "5m", "15min": "15m", "30min": "30m", "1h": "1H",
+               "daily": "D", "weekly": "W", "monthly": "M"}
+
+
+@app.get("/api/mtf-matrix/{symbol}")
+def mtf_matrix(symbol: str, benchmark: str = "NIFTY 50"):
+    """One column per timeframe (5m..monthly), 8 indicator rows each — powers
+    the multi-timeframe matrix in the chart panel sidebar."""
+    bench_yahoo = BENCHMARK_MAP.get(benchmark)
+
+    def build_column(tf):
+        interval, scan_period = TIMEFRAME_MAP[tf]
+        period = _CHART_RANGE.get(tf, scan_period)
+        df = fetch_ohlcv(f"{symbol}.NS", interval, period)
+        if df is None or len(df) < 30:
+            return {"timeframe": tf, "label": _MTF_LABELS[tf], "available": False}
+
+        ratio = None
+        if bench_yahoo:
+            bench_df = fetch_ohlcv(bench_yahoo, interval, period)
+            if bench_df is not None:
+                ratio = _compute_ratio(df, bench_df, interval)
+
+        snap = compute_mtf_snapshot(df, ratio)
+        snap["timeframe"] = tf
+        snap["label"] = _MTF_LABELS[tf]
+        snap["available"] = True
+        return snap
+
+    columns = []
+    with ThreadPoolExecutor(max_workers=len(_MTF_TIMEFRAMES)) as executor:
+        futures = {executor.submit(build_column, tf): tf for tf in _MTF_TIMEFRAMES}
+        results_by_tf = {}
+        for future in as_completed(futures):
+            tf = futures[future]
+            try:
+                results_by_tf[tf] = future.result()
+            except Exception:
+                results_by_tf[tf] = {"timeframe": tf, "label": _MTF_LABELS[tf], "available": False}
+    columns = [results_by_tf[tf] for tf in _MTF_TIMEFRAMES]
+
+    total_bull = sum(c.get("bullCount", 0) for c in columns if c.get("available"))
+    total_ind  = sum(c.get("total", 0) for c in columns if c.get("available"))
+
+    return {
+        "symbol": symbol,
+        "benchmark": benchmark,
+        "columns": columns,
+        "totalBull": total_bull,
+        "totalIndicators": total_ind,
+    }
+
+
+# ── Signal history (derived crossover events) ───────────────────────────────
+
+@app.get("/api/signal-history/{symbol}")
+def signal_history(symbol: str, timeframe: str = "daily", benchmark: str = "NIFTY 50",
+                    days: int = 120, limit: int = 20):
+    if timeframe not in TIMEFRAME_MAP:
+        raise HTTPException(status_code=400, detail=f"Unknown timeframe: {timeframe}")
+    interval, scan_period = TIMEFRAME_MAP[timeframe]
+    period = _CHART_RANGE.get(timeframe, scan_period)
+    df = fetch_ohlcv(f"{symbol}.NS", interval, period)
+    if df is None or len(df) < 30:
+        raise HTTPException(status_code=404, detail=f"No data for {symbol}")
+
+    ratio = None
+    bench_yahoo = BENCHMARK_MAP.get(benchmark)
+    if bench_yahoo:
+        bench_df = fetch_ohlcv(bench_yahoo, interval, period)
+        if bench_df is not None:
+            ratio = _compute_ratio(df, bench_df, interval)
+
+    events = compute_signal_history(df, ratio, lookback_days=days, max_events=limit)
+    return {"symbol": symbol, "timeframe": timeframe, "events": events}
+
+
+# ── Rating history (walk-forward score) ─────────────────────────────────────
+
+@app.get("/api/rating-history/{symbol}")
+def rating_history(symbol: str, timeframe: str = "daily", benchmark: str = "NIFTY 50", days: int = 20):
+    if timeframe not in TIMEFRAME_MAP:
+        raise HTTPException(status_code=400, detail=f"Unknown timeframe: {timeframe}")
+    interval, scan_period = TIMEFRAME_MAP[timeframe]
+    period = _CHART_RANGE.get(timeframe, scan_period)
+    df = fetch_ohlcv(f"{symbol}.NS", interval, period)
+    if df is None or len(df) < 30:
+        raise HTTPException(status_code=404, detail=f"No data for {symbol}")
+
+    ratio = None
+    bench_yahoo = BENCHMARK_MAP.get(benchmark)
+    if bench_yahoo:
+        bench_df = fetch_ohlcv(bench_yahoo, interval, period)
+        if bench_df is not None:
+            ratio = _compute_ratio(df, bench_df, interval)
+
+    history = compute_rating_history(df, ratio, days=days)
+    return {"symbol": symbol, "timeframe": timeframe, "history": history}
+
+
+# ── Compare stocks ───────────────────────────────────────────────────────────
+
+@app.get("/api/compare-snapshot/{symbol}")
+def compare_snapshot(symbol: str, timeframe: str = "daily", benchmark: str = "NIFTY 50"):
+    """Single-symbol snapshot for the Compare Stocks tool: price, technical
+    score, RS trend, EMA structure, MACD, volume, RSI."""
+    if timeframe not in TIMEFRAME_MAP:
+        raise HTTPException(status_code=400, detail=f"Unknown timeframe: {timeframe}")
+    interval, scan_period = TIMEFRAME_MAP[timeframe]
+    period = _CHART_RANGE.get(timeframe, scan_period)
+    df = fetch_ohlcv(f"{symbol}.NS", interval, period)
+    if df is None or len(df) < 30:
+        raise HTTPException(status_code=404, detail=f"No data for {symbol}")
+
+    ratio = None
+    rs_trend = "Unknown"
+    ratio_dist = None
+    bench_yahoo = BENCHMARK_MAP.get(benchmark)
+    if bench_yahoo:
+        bench_df = fetch_ohlcv(bench_yahoo, interval, period)
+        if bench_df is not None:
+            ratio = _compute_ratio(df, bench_df, interval)
+            if ratio is not None and len(ratio) >= 20:
+                r_ema = calculate_ema(ratio, 20)
+                rs_trend = _rs_trend(r_ema)
+                r_cur, r_ema_v = float(ratio.iloc[-1]), float(r_ema.iloc[-1])
+                if r_ema_v != 0:
+                    ratio_dist = round((r_cur - r_ema_v) / r_ema_v * 100, 2)
+
+    signals = compute_signals(df, ratio)
+    conds = signals["conditions"]
+
+    ema_flags = [conds[k]["bull"] for k in ("price_gt_20ema", "price_gt_50ema", "price_gt_150ema") if k in conds]
+    ema_structure = "All above" if all(ema_flags) else ("All below" if not any(ema_flags) else "Mixed")
+
+    # Per-EMA breakout so the Compare tool can show 20/50/150 detail rows for
+    # both price-vs-EMA and ratio-vs-EMA. bull is None (→ "—" in the UI) when the
+    # indicator wasn't computed, e.g. ratio rows with no benchmark ratio.
+    def _bull(key):
+        c = conds.get(key)
+        return c["bull"] if c else None
+
+    avg_vol = calculate_avg_volume(df["Volume"])
+    cur_vol = float(df["Volume"].iloc[-1])
+    rsi_val = float(calc_rsi(df["Close"], 14).iloc[-1])
+
+    return {
+        "symbol":        symbol,
+        "ltp":           round(float(df["Close"].iloc[-1]), 2),
+        "score":         signals["pct"],
+        "signal":        signals["signal"],
+        "rsTrend":       rs_trend,
+        "ratioDistance": ratio_dist,
+        "emaStructure":  ema_structure,
+        "priceVs20":     _bull("price_gt_20ema"),
+        "priceVs50":     _bull("price_gt_50ema"),
+        "priceVs150":    _bull("price_gt_150ema"),
+        "ratioVs20":     _bull("ratio_gt_20ema"),
+        "ratioVs50":     _bull("ratio_gt_50ema"),
+        "ratioVs150":    _bull("ratio_gt_150ema"),
+        "macdBullish":   conds.get("macd_gt_signal", {}).get("bull"),
+        "volume":        int(cur_vol),
+        "avgVolume":     int(avg_vol),
+        "volRatio":      round(cur_vol / avg_vol, 2) if avg_vol else None,
+        "rsi":           round(rsi_val, 1),
+    }
+
+
+@app.get("/api/search-symbols")
+def search_symbols(q: str = ""):
+    """Free-text symbol search across all NSE-listed equities (via Yahoo's
+    search endpoint) — powers the Compare Stocks picker."""
+    q = q.strip()
+    if len(q) < 1:
+        return {"results": []}
+    try:
+        resp = SESSION.get(
+            "https://query1.finance.yahoo.com/v1/finance/search",
+            params={"q": q, "quotesCount": 15, "newsCount": 0},
+            timeout=8,
+        )
+        data = resp.json() if resp.status_code == 200 else {}
+    except Exception:
+        data = {}
+
+    results = []
+    for item in data.get("quotes", []):
+        sym = item.get("symbol", "")
+        if not sym.endswith(".NS"):
+            continue
+        results.append({
+            "symbol": sym[:-3],
+            "name": item.get("shortname") or item.get("longname") or sym[:-3],
+        })
+    return {"results": results}
+
+
+@app.get("/api/financials/{symbol}")
+def get_financials(symbol: str):
+    """Quarterly Sales/EPS with YoY %Chg for the Financial Scan panel —
+    scraped from screener.in since Yahoo's fundamentals API only exposes
+    ~4-5 trailing quarters for NSE stocks (confirmed too shallow for this)."""
+    from fundamentals import fetch_quarterly_financials
+
+    data = fetch_quarterly_financials(symbol)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"No quarterly financials found for {symbol}")
+    return data
 
 
 @app.get("/health")
