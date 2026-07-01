@@ -86,17 +86,22 @@ export default function CandleChart({
       addLine(ema50,  PRICE_EMA.ema50)
       addLine(ema150, PRICE_EMA.ema150)
 
-      // Expose chart API for the drawing overlay
-      onReady?.({ chart, mainSeries: candleSeries })
-
       // ── Pane 1: MACD(12,26,9) ─────────────────────────────────────────
-      // Simple: histogram (green above 0, red below 0) + MACD line + Signal line.
+      // priceFormat precision:4 ensures the legend shows e.g. "-0.0423" instead
+      // of "-0.04" for low-priced stocks, and avoids "0.00" for very small values.
+      // We save a ref to one MACD series so DrawingOverlay can use it for
+      // pane-aware coordinate conversion (drawings must anchor to MACD's Y scale,
+      // not the main price scale — otherwise they drift when price zoom changes).
+      let macdSeriesRef = null
       if (hasMacd) {
+        const macdFmt = { type: 'price', precision: 4, minMove: 0.0001 }
+
         if (macdHistogram?.length) {
           const hist = chart.addSeries(HistogramSeries, {
             base:             0,
             priceLineVisible: false,
             lastValueVisible: false,
+            priceFormat:      macdFmt,
           }, MACD_PANE)
           hist.setData(macdHistogram)
         }
@@ -108,8 +113,10 @@ export default function CandleChart({
             title:            'MACD',
             priceLineVisible: false,
             lastValueVisible: true,
+            priceFormat:      macdFmt,
           }, MACD_PANE)
           ml.setData(macdLine)
+          macdSeriesRef = ml   // ← ref for drawing overlay
         }
 
         if (macdSignal?.length) {
@@ -119,17 +126,46 @@ export default function CandleChart({
             title:            'Signal',
             priceLineVisible: false,
             lastValueVisible: true,
+            priceFormat:      macdFmt,
           }, MACD_PANE)
           sl.setData(macdSignal)
+          if (!macdSeriesRef) macdSeriesRef = sl
         }
       }
 
       // ── Pane 2: Ratio vs benchmark ─────────────────────────────────────
+      // Ratio = stock_price / index_level (e.g. 236 / 23946 ≈ 0.00986).
+      // Default 2dp rounds this to "0.00" — use 5dp so the legend shows
+      // the actual value (e.g. "0.00986") and the scale is readable.
+      // Save a ref to the ratio line series for pane-aware drawing (same
+      // reason as macdSeriesRef — drawings must anchor to ratio's Y scale).
+      let ratioSeriesRef = null
       if (hasRatio) {
-        addLine(ratioLine,   RATIO_STYLE.line,   RATIO_PANE)
-        addLine(ratioEma20,  RATIO_STYLE.ema20,  RATIO_PANE)
-        addLine(ratioEma150, RATIO_STYLE.ema150, RATIO_PANE)
+        const ratioFmt = { type: 'price', precision: 5, minMove: 0.00001 }
+        const addRatioLine = (data, style) => {
+          if (!data?.length) return null
+          const s = chart.addSeries(LineSeries, {
+            color:            style.color,
+            lineWidth:        style.lineWidth,
+            lineStyle:        style.lineStyle ?? LineStyle.Solid,
+            title:            style.title,
+            priceLineVisible: false,
+            lastValueVisible: true,
+            priceFormat:      ratioFmt,
+          }, RATIO_PANE)
+          s.setData(data)
+          return s
+        }
+        ratioSeriesRef = addRatioLine(ratioLine,   RATIO_STYLE.line)   // ← ref for drawing overlay
+        addRatioLine(ratioEma20,  RATIO_STYLE.ema20)
+        addRatioLine(ratioEma150, RATIO_STYLE.ema150)
       }
+
+      // Expose chart API + per-pane series refs for the drawing overlay.
+      // The overlay uses each pane's own series for coordinate conversion so
+      // trendlines drawn in MACD / Ratio panes stay anchored to those scales
+      // (not the main price scale, which would cause them to drift on zoom).
+      onReady?.({ chart, mainSeries: candleSeries, macdSeries: macdSeriesRef, ratioSeries: ratioSeriesRef })
 
       // ── Pane sizing via STRETCH FACTORS (v5 proportional API) ──────────
       // New panes default to a tiny stretch factor, which is why the MACD/Ratio

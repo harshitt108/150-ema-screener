@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import {
   ArrowLeft, Plus, Upload, ClipboardList, RefreshCw, Settings2, Trash2,
   TrendingUp, TrendingDown, Minus, AlertCircle, ChevronUp, ChevronDown,
-  Bell, Clock, Mail
+  Bell, Clock, Mail, ChevronRight
 } from 'lucide-react'
 import AddHoldingModal from '../components/portfolio/AddHoldingModal'
 import UploadModal from '../components/portfolio/UploadModal'
@@ -172,6 +172,7 @@ export default function PortfolioDetail({ portfolioId, onBack }) {
   const [health, setHealth] = useState(null)
   const [crosses, setCrosses] = useState([])
   const [recentAlerts, setRecentAlerts] = useState([])
+  const [showOlderAlerts, setShowOlderAlerts] = useState(false)
   const [lastScannedAt, setLastScannedAt] = useState(null)
   const [noData, setNoData] = useState([])
   const [refreshing, setRefreshing] = useState(false)
@@ -239,6 +240,7 @@ export default function PortfolioDetail({ portfolioId, onBack }) {
           setHealth(d.healthDetails || { score: d.healthScore, category: d.healthCategory })
           setLastScannedAt(d.scannedAt)
           setNoData(d.noData || [])
+          setCrosses(d.crosses || [])
           // Use daily scan status only as fallback (rule EMA fetch below may override)
           setTableStatus(prev => Object.keys(prev).length === 0 ? (d.status || {}) : prev)
           setHasRefreshed(true)
@@ -246,7 +248,7 @@ export default function PortfolioDetail({ portfolioId, onBack }) {
       })
       .catch(() => {})
 
-    fetch(`${API_BASE}/api/monitoring/alerts/${portfolioId}?limit=20`)
+    fetch(`${API_BASE}/api/monitoring/alerts/${portfolioId}`)
       .then(r => r.json()).then(setRecentAlerts).catch(() => {})
 
     // Load rules then immediately fetch rule-context EMA
@@ -323,7 +325,7 @@ export default function PortfolioDetail({ portfolioId, onBack }) {
       setTableStatus(emaData.status || data.status || {})
       setRatioConditions(emaData.ratioConditions || {})
 
-      fetch(`${API_BASE}/api/monitoring/alerts/${portfolioId}?limit=20`)
+      fetch(`${API_BASE}/api/monitoring/alerts/${portfolioId}`)
         .then(r => r.json()).then(setRecentAlerts).catch(() => {})
     } catch (e) {
       alert(e.message)
@@ -517,29 +519,83 @@ export default function PortfolioDetail({ portfolioId, onBack }) {
         </div>
       )}
 
-      {/* EMA crosses detected in latest scan */}
-      {crosses.length > 0 && (
-        <div className="bg-[#0f0f1a] border border-amber-500/25 rounded-2xl px-5 py-4 mb-6">
-          <p className="text-xs text-amber-400 font-medium mb-3 flex items-center gap-1.5">
-            <AlertCircle size={13} />
-            {crosses.length} EMA cross{crosses.length > 1 ? 'es' : ''} detected in latest scan
-          </p>
-          <div className="space-y-2">
-            {crosses.map((c, i) => (
-              <div key={i} className={`flex items-center justify-between text-xs rounded-lg px-3 py-2
-                ${c.direction === 'below' ? 'bg-rose-500/10 text-rose-300' : 'bg-emerald-500/10 text-emerald-300'}`}>
-                <span>
-                  <span className="font-semibold">{c.symbol}</span>
-                  {' '}crossed {c.direction} the <span className="font-semibold">{c.period} EMA</span>
+      {/* ── System alerts: EMA crosses + Golden/Death cross (Daily) ───────── */}
+      {crosses.length > 0 && (() => {
+        // 150 EMA always first, then 50, 200, 20, then EMA/EMA crosses
+        const EMA_PRIORITY = { '150': 0, '50': 1, '200': 2, '20': 3 }
+        const sortCrosses = arr => [...arr].sort((a, b) => {
+          // Primary: 150 EMA first (highest priority signal)
+          const pa = a.cross_type === 'ema_ema' ? 99 : (EMA_PRIORITY[String(a.period)] ?? 10)
+          const pb = b.cross_type === 'ema_ema' ? 99 : (EMA_PRIORITY[String(b.period)] ?? 10)
+          return pa - pb
+        })
+        const is150 = c => c.cross_type !== 'ema_ema' && String(c.period) === '150'
+
+        const CrossRow = (c, i, isBull) => (
+          <div key={i} className={`flex items-center justify-between text-xs rounded-lg px-3 py-2.5
+            border transition-colors
+            ${is150(c)
+              ? (isBull ? 'bg-emerald-500/15 border-emerald-500/40' : 'bg-rose-500/15 border-rose-500/40')
+              : (isBull ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-rose-500/10 border-rose-500/20')
+            }`}>
+            <div className="flex items-center gap-2 min-w-0">
+              {is150(c) && (
+                <span className={`text-[9px] font-black px-1.5 py-0.5 rounded flex-shrink-0 tracking-wide
+                  ${isBull ? 'bg-emerald-500/30 text-emerald-300' : 'bg-rose-500/30 text-rose-300'}`}>
+                  150 KEY
                 </span>
-                <span className="opacity-70">
-                  ₹{c.currentPrice?.toLocaleString('en-IN') ?? '—'} &nbsp;({c.dist >= 0 ? '+' : ''}{c.dist?.toFixed(1)}%)
+              )}
+              {c.cross_type === 'ema_ema' && (
+                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded flex-shrink-0
+                  ${isBull ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}`}>
+                  {isBull ? '☀ GOLDEN' : '☠ DEATH'}
                 </span>
-              </div>
-            ))}
+              )}
+              <span className={isBull ? 'text-emerald-200' : 'text-rose-200'}>
+                <span className={`font-semibold ${is150(c) ? 'text-white' : ''}`}>{c.symbol}</span>
+                {' — '}
+                <span className="opacity-80">{c.label}</span>
+              </span>
+            </div>
+            <span className={`flex-shrink-0 ml-3 font-mono text-[11px] ${isBull ? 'text-emerald-400' : 'text-rose-400'}`}>
+              ₹{c.currentPrice?.toLocaleString('en-IN') ?? '—'}
+              {c.dist != null && <span className="opacity-70"> ({c.dist >= 0 ? '+' : ''}{c.dist?.toFixed(1)}%)</span>}
+            </span>
           </div>
-        </div>
-      )}
+        )
+
+        const bullish = sortCrosses(crosses.filter(c => c.direction === 'above'))
+        const bearish = sortCrosses(crosses.filter(c => c.direction === 'below'))
+
+        return (
+          <div className="bg-[#0f0f1a] border border-[#2a2a3d] rounded-2xl px-5 py-4 mb-6 space-y-4">
+            <p className="text-xs text-slate-400 font-medium flex items-center gap-1.5">
+              <AlertCircle size={13} className="text-amber-400" />
+              <span className="text-amber-400">{crosses.length} signal{crosses.length > 1 ? 's' : ''}</span>
+              &nbsp;detected in latest scan &nbsp;
+              <span className="text-slate-600 font-normal">· Daily · independent of rules</span>
+            </p>
+
+            {bullish.length > 0 && (
+              <div>
+                <p className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wider mb-2 flex items-center gap-1">
+                  <TrendingUp size={11} /> Bullish signals ({bullish.length})
+                </p>
+                <div className="space-y-1.5">{bullish.map((c, i) => CrossRow(c, i, true))}</div>
+              </div>
+            )}
+
+            {bearish.length > 0 && (
+              <div>
+                <p className="text-[10px] font-semibold text-rose-400 uppercase tracking-wider mb-2 flex items-center gap-1">
+                  <TrendingDown size={11} /> Bearish signals ({bearish.length})
+                </p>
+                <div className="space-y-1.5">{bearish.map((c, i) => CrossRow(c, i, false))}</div>
+              </div>
+            )}
+          </div>
+        )
+      })()}
 
       {hasRefreshed && noData.length > 0 && (
         <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-400 text-xs flex gap-2">
@@ -827,6 +883,158 @@ export default function PortfolioDetail({ portfolioId, onBack }) {
         />
       )}
 
+      {/* ── Alert History (7 days, date-grouped) ──────────────────────────── */}
+      {false && (() => {
+        const parseAlert = (a) => {
+          const at = a.alertType
+          if (at === 'golden_cross') return { direction: 'above', period: null, label: 'Golden Cross — 20 EMA crossed above 50 EMA', badge: '☀ GOLDEN', isEmaEma: true }
+          if (at === 'death_cross')  return { direction: 'below', period: null, label: 'Death Cross — 20 EMA crossed below 50 EMA',  badge: '☠ DEATH',  isEmaEma: true }
+          const parts = at.split('_')            // ['cross','above','150']
+          const dir   = parts[1] === 'above' ? 'above' : 'below'
+          const per   = parts[2] || ''
+          return { direction: dir, period: per, label: `crossed ${dir} the ${per} EMA`, badge: null, isEmaEma: false }
+        }
+
+        // "Still active" check using latest tableStatus in state
+        const isStillActive = (a, parsed) => {
+          const st = tableStatus[a.symbol]?.ema
+          if (!st) return null  // no data yet
+          if (parsed.isEmaEma) {
+            const e20 = tableStatus[a.symbol]?.ema?.['20']?.value
+            const e50 = tableStatus[a.symbol]?.ema?.['50']?.value
+            if (e20 == null || e50 == null) return null
+            return parsed.direction === 'above' ? e20 > e50 : e20 < e50
+          }
+          const emaState = st[parsed.period]
+          if (!emaState) return null
+          return parsed.direction === 'above' ? emaState.above : !emaState.above
+        }
+
+        // Group by dateIST, newest date first
+        const byDate = {}
+        recentAlerts.forEach(a => {
+          const d = a.dateIST || a.triggeredAt?.slice(0,10) || 'Unknown'
+          if (!byDate[d]) byDate[d] = []
+          byDate[d].push(a)
+        })
+        const dates = Object.keys(byDate).sort((a,b) => b.localeCompare(a))
+
+        // IST today for "Today" / "Yesterday" labels
+        const IST_OFFSET = 5.5 * 60 * 60 * 1000
+        const nowIST   = new Date(Date.now() + IST_OFFSET)
+        const todayIST = nowIST.toISOString().slice(0,10)
+        const ystIST   = new Date(+nowIST - 86400000).toISOString().slice(0,10)
+        const fmtDate  = d => d === todayIST ? 'Today' : d === ystIST ? 'Yesterday'
+          : new Date(d).toLocaleDateString('en-IN', { day:'2-digit', month:'short', year: new Date(d).getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined })
+
+        const RECENT_DAYS = 7
+        const recentDates = dates.filter(d => {
+          const diff = (new Date(todayIST) - new Date(d)) / 86400000
+          return diff < RECENT_DAYS
+        })
+        const olderDates  = dates.filter(d => {
+          const diff = (new Date(todayIST) - new Date(d)) / 86400000
+          return diff >= RECENT_DAYS
+        })
+        const visibleDates = showOlderAlerts ? dates : recentDates
+
+        return (
+          <div className="bg-[#0f0f1a] border border-[#1e1e30] rounded-2xl px-5 py-4 mb-6">
+            {/* Header */}
+            <div className="flex items-center justify-between mb-4">
+              <p className="text-xs text-slate-400 font-medium flex items-center gap-1.5">
+                <Bell size={12} className="text-violet-400" />
+                Alert History
+                <span className="ml-1 text-slate-600">· {recentAlerts.length} unique event{recentAlerts.length !== 1 ? 's' : ''}</span>
+              </p>
+              <span className="text-[10px] text-slate-600">Daily · deduplicated</span>
+            </div>
+
+            {/* Date groups */}
+            <div className="space-y-5">
+              {visibleDates.map(date => (
+                <div key={date}>
+                  {/* Date label */}
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                      {fmtDate(date)}
+                    </span>
+                    <div className="flex-1 h-px bg-[#1e1e30]" />
+                    <span className="text-[10px] text-slate-700">{byDate[date].length} signal{byDate[date].length !== 1 ? 's' : ''}</span>
+                  </div>
+
+                  {/* Alert rows */}
+                  <div className="space-y-1.5">
+                    {byDate[date].map(a => {
+                      const parsed  = parseAlert(a)
+                      const active  = isStillActive(a, parsed)
+                      const isBull  = parsed.direction === 'above'
+                      return (
+                        <div key={a.id}
+                          className={`flex items-center justify-between text-xs rounded-lg px-3 py-2
+                            ${isBull ? 'bg-emerald-500/10 border border-emerald-500/15' : 'bg-rose-500/10 border border-rose-500/15'}`}>
+                          {/* Left */}
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isBull ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                            {parsed.badge && (
+                              <span className={`text-[9px] font-bold px-1 py-0.5 rounded flex-shrink-0
+                                ${isBull ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'}`}>
+                                {parsed.badge}
+                              </span>
+                            )}
+                            <span className={`font-semibold ${isBull ? 'text-emerald-200' : 'text-rose-200'}`}>{a.symbol}</span>
+                            <span className="text-slate-500 truncate">{parsed.label}</span>
+                            {a.emailSent && <Mail size={9} className="text-violet-400 flex-shrink-0" title="Email sent" />}
+                          </div>
+                          {/* Right */}
+                          <div className="flex items-center gap-3 flex-shrink-0 ml-3">
+                            {a.currentPrice != null && (
+                              <span className="font-mono text-[11px] text-slate-400">
+                                ₹{a.currentPrice.toLocaleString('en-IN')}
+                                {a.distancePct != null && (
+                                  <span className={`ml-1 ${isBull ? 'text-emerald-500' : 'text-rose-500'}`}>
+                                    ({a.distancePct >= 0 ? '+' : ''}{a.distancePct?.toFixed(1)}%)
+                                  </span>
+                                )}
+                              </span>
+                            )}
+                            {/* Still active badge */}
+                            {active === true && (
+                              <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold
+                                ${isBull ? 'bg-emerald-500/15 text-emerald-400' : 'bg-rose-500/15 text-rose-400'}`}>
+                                ● Active
+                              </span>
+                            )}
+                            {active === false && (
+                              <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-slate-500/15 text-slate-500">
+                                ✓ Recovered
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Show older toggle */}
+            {olderDates.length > 0 && (
+              <button
+                onClick={() => setShowOlderAlerts(v => !v)}
+                className="mt-4 w-full flex items-center justify-center gap-1.5 text-[11px] text-slate-600
+                  hover:text-slate-400 transition-colors py-1.5 border-t border-[#1e1e30]">
+                <ChevronRight size={12} className={`transition-transform ${showOlderAlerts ? 'rotate-90' : ''}`} />
+                {showOlderAlerts
+                  ? 'Show less'
+                  : `Show ${olderDates.length} older day${olderDates.length !== 1 ? 's' : ''}`}
+              </button>
+            )}
+          </div>
+        )
+      })()}
+
       {/* Recent alerts history */}
       {recentAlerts.length > 0 && (
         <div className="bg-[#0f0f1a] border border-[#1e1e30] rounded-2xl px-5 py-4 mb-6">
@@ -837,14 +1045,16 @@ export default function PortfolioDetail({ portfolioId, onBack }) {
           <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
             {recentAlerts.map(a => {
               const isBelow = a.alertType.includes('below')
+              const at = a.alertType
+              const label = at === 'golden_cross' ? 'Golden Cross' :
+                            at === 'death_cross'  ? 'Death Cross'  :
+                            `${isBelow ? 'below' : 'above'} ${at.split('_').pop()} EMA`
               return (
                 <div key={a.id} className="flex items-center justify-between text-xs">
                   <div className="flex items-center gap-2">
                     <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isBelow ? 'bg-rose-500' : 'bg-emerald-500'}`} />
                     <span className="font-semibold text-slate-300">{a.symbol}</span>
-                    <span className="text-slate-500">
-                      {isBelow ? 'below' : 'above'} {a.alertType.split('_').pop()} EMA
-                    </span>
+                    <span className="text-slate-500">{label}</span>
                     {a.emailSent && <Mail size={10} className="text-violet-400" title="Email sent" />}
                   </div>
                   <span className="text-slate-600">

@@ -3,6 +3,7 @@ import { X, TrendingUp, TrendingDown, Loader, ChevronLeft, ChevronRight, Externa
 import CandleChart from './CandleChart'
 import DrawingOverlay from './DrawingOverlay'
 import AddToWatchlist from './AddToWatchlist'
+import ChartErrorBoundary from './ChartErrorBoundary'
 
 // Fills the flex container, measures real height, passes it to CandleChart.
 // Waits 230ms before the first measurement so the panel's slide-in animation
@@ -86,13 +87,29 @@ function CondCard({ label, bull, val }) {
 }
 
 
+const TIMEFRAMES = [
+  { value: '5min',    label: '5m'  },
+  { value: '15min',   label: '15m' },
+  { value: '30min',   label: '30m' },
+  { value: '1h',      label: '1H'  },
+  { value: 'daily',   label: '1D'  },
+  { value: 'weekly',  label: '1W'  },
+  { value: 'monthly', label: '1M'  },
+]
+
 // ─── Main panel ──────────────────────────────────────────────────────────────
-export default function StockDetailPanel({ stock, timeframe, onClose, onPrev, onNext, currentIndex, totalCount, watchlist }) {
-  const [chartData, setChartData] = useState(null)
-  const [loading,   setLoading]   = useState(true)
-  const [error,     setError]     = useState(null)
-  const chartApiRef    = useRef(null)     // { chart, mainSeries } — set by CandleChart via onReady
-  const [chartVersion, setChartVersion] = useState(0)  // bumped on each chart (re)creation
+export default function StockDetailPanel({ stock, timeframe: initialTimeframe, onClose, onPrev, onNext, currentIndex, totalCount, watchlist }) {
+  const [timeframe,  setTimeframe]  = useState(initialTimeframe || 'daily')
+  const [chartData,  setChartData]  = useState(null)
+  const [loading,    setLoading]    = useState(true)
+  const [error,      setError]      = useState(null)
+  const chartApiRef    = useRef(null)
+  const [chartVersion, setChartVersion] = useState(0)
+
+  // When parent navigates to a different stock, reset timeframe to the parent's default
+  useEffect(() => {
+    setTimeframe(initialTimeframe || 'daily')
+  }, [stock?.symbol, initialTimeframe])
 
   // Keyboard navigation
   useEffect(() => {
@@ -114,7 +131,8 @@ export default function StockDetailPanel({ stock, timeframe, onClose, onPrev, on
     setError(null)
     setChartData(null)
     const bench = encodeURIComponent(stock.benchmark || 'NIFTY 50')
-    fetch(`${API_BASE}/api/chart/${stock.symbol}?timeframe=${timeframe}&benchmark=${bench}`)
+    const sym   = encodeURIComponent(stock.symbol)   // symbols like M&M would break the URL unencoded
+    fetch(`${API_BASE}/api/chart/${sym}?timeframe=${timeframe}&benchmark=${bench}`)
       .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
       .then(d => { if (!cancelled) { setChartData(d); setLoading(false) } })
       .catch(e => { if (!cancelled) { setError(String(e)); setLoading(false) } })
@@ -188,9 +206,24 @@ export default function StockDetailPanel({ stock, timeframe, onClose, onPrev, on
                     vs {stock.benchmark}
                   </span>
                 )}
-                <span className="text-xs text-slate-500 uppercase tracking-wide">{timeframe}</span>
               </div>
             </div>
+          </div>
+
+          {/* Timeframe switcher */}
+          <div className="flex items-center gap-0.5 bg-[#13131f] border border-[#1e1e30] rounded-lg p-0.5 flex-shrink-0">
+            {TIMEFRAMES.map(tf => (
+              <button
+                key={tf.value}
+                onClick={() => setTimeframe(tf.value)}
+                className={`px-2.5 py-1.5 rounded-md text-xs font-semibold transition-colors
+                  ${timeframe === tf.value
+                    ? 'bg-violet-600 text-white'
+                    : 'text-slate-500 hover:text-slate-300'}`}
+              >
+                {tf.label}
+              </button>
+            ))}
           </div>
           {/* Action buttons */}
           <div className="flex items-center gap-2 flex-shrink-0">
@@ -232,25 +265,27 @@ export default function StockDetailPanel({ stock, timeframe, onClose, onPrev, on
                 </div>
               )}
               {!loading && !error && chartData && (
-                <DrawingOverlay chartApiRef={chartApiRef} chartVersion={chartVersion}
-                  storageKey={`${stock.symbol}:${timeframe}`}>
-                  <ChartAutoHeight
-                    candles={chartData.candles}
-                    ema20={chartData.ema20}
-                    ema50={chartData.ema50}
-                    ema150={chartData.ema150}
-                    macdLine={chartData.macdLine}
-                    macdSignal={chartData.macdSignal}
-                    macdHistogram={chartData.macdHistogram}
-                    ratioLine={chartData.ratioLine}
-                    ratioEma20={chartData.ratioEma20}
-                    ratioEma150={chartData.ratioEma150}
-                    onReady={(api) => {
-                      chartApiRef.current = api
-                      setChartVersion(v => v + 1)
-                    }}
-                  />
-                </DrawingOverlay>
+                <ChartErrorBoundary resetKey={`${stock.symbol}:${timeframe}`}>
+                  <DrawingOverlay chartApiRef={chartApiRef} chartVersion={chartVersion}
+                    storageKey={`${stock.symbol}:${timeframe}`}>
+                    <ChartAutoHeight
+                      candles={chartData.candles}
+                      ema20={chartData.ema20}
+                      ema50={chartData.ema50}
+                      ema150={chartData.ema150}
+                      macdLine={chartData.macdLine}
+                      macdSignal={chartData.macdSignal}
+                      macdHistogram={chartData.macdHistogram}
+                      ratioLine={chartData.ratioLine}
+                      ratioEma20={chartData.ratioEma20}
+                      ratioEma150={chartData.ratioEma150}
+                      onReady={(api) => {
+                        chartApiRef.current = api
+                        setChartVersion(v => v + 1)
+                      }}
+                    />
+                  </DrawingOverlay>
+                </ChartErrorBoundary>
               )}
             </div>
           </div>

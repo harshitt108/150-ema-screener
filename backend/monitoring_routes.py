@@ -187,46 +187,126 @@ def scan_history(portfolio_id: int, limit: int = 10, db: Session = Depends(get_d
 
 @router.get("/last-scan/{portfolio_id}")
 def last_scan(portfolio_id: int, db: Session = Depends(get_db)):
-    row = (
+    from health_score import detect_crosses
+    rows = (
         db.query(ScanResult)
         .filter(ScanResult.portfolio_id == portfolio_id)
         .order_by(ScanResult.scanned_at.desc())
-        .first()
+        .limit(2)
+        .all()
     )
-    if not row:
+    if not rows:
         return {"hasScan": False}
+
+    curr_row    = rows[0]
+    curr_status = json.loads(curr_row.status_json)
+
+    # Primary: use stored crosses_json if the latest scan found something.
+    # If the latest scan found 0 crosses (stocks haven't moved since last scan),
+    # fall back to the most recent *historical* batch from sent_alerts so the
+    # panel doesn't go blank just because the last refresh was a no-op.
+    stored = json.loads(curr_row.crosses_json) if curr_row.crosses_json is not None else None
+
+    if stored:
+        crosses = stored
+    else:
+        # Reconstruct the most recent batch of alerts from sent_alerts.
+        # Alerts from the same scan run share the same triggered_at timestamp;
+        # we group the most recent 50 alerts and take the latest cluster.
+        from datetime import timedelta
+        all_alerts = (
+            db.query(SentAlert)
+            .filter(SentAlert.portfolio_id == portfolio_id)
+            .order_by(SentAlert.triggered_at.desc())
+            .limit(50)
+            .all()
+        )
+        crosses = []
+        if all_alerts:
+            latest_t = all_alerts[0].triggered_at
+            # All alerts within 60s of the most-recent alert form one "batch"
+            batch = [a for a in all_alerts
+                     if abs((a.triggered_at - latest_t).total_seconds()) <= 60]
+            for a in batch:
+                at    = a.alert_type
+                parts = at.split("_")
+                if at in ("golden_cross", "death_cross"):
+                    direction  = "above" if at == "golden_cross" else "below"
+                    label      = ("Golden Cross — 20 EMA crossed above 50 EMA"
+                                  if at == "golden_cross" else
+                                  "Death Cross — 20 EMA crossed below 50 EMA")
+                    cross_type = "ema_ema"
+                    period     = None
+                else:
+                    direction  = parts[1] if len(parts) >= 3 else ("above" if "above" in at else "below")
+                    period_str = parts[2] if len(parts) >= 3 else ""
+                    try:   period = int(period_str)
+                    except ValueError: period = None
+                    label      = f"crossed {direction} the {period_str} EMA" if period else at
+                    cross_type = "price_ema"
+                crosses.append({
+                    "symbol":       a.symbol,
+                    "cross_type":   cross_type,
+                    "period":       period,
+                    "alert_type":   at,
+                    "direction":    direction,
+                    "label":        label,
+                    "currentPrice": a.current_price,
+                    "ema_value":    a.ema_value,
+                    "dist":         a.distance_pct,
+                })
+
     return {
         "hasScan":        True,
-        "scannedAt":      row.scanned_at.isoformat(),
-        "healthScore":    row.health_score,
-        "healthCategory": row.health_category,
-        "healthDetails":  json.loads(row.health_details) if row.health_details else None,
-        "status":         json.loads(row.status_json),
-        "noData":         json.loads(row.no_data_json) if row.no_data_json else [],
+        "scannedAt":      curr_row.scanned_at.isoformat(),
+        "healthScore":    curr_row.health_score,
+        "healthCategory": curr_row.health_category,
+        "healthDetails":  json.loads(curr_row.health_details) if curr_row.health_details else None,
+        "status":         curr_status,
+        "noData":         json.loads(curr_row.no_data_json) if curr_row.no_data_json else [],
+        "crosses":        crosses,
     }
 
 
 # ─── Alerts history ───────────────────────────────────────────────────────────
 
 @router.get("/alerts/{portfolio_id}")
-def get_alerts(portfolio_id: int, limit: int = 30, db: Session = Depends(get_db)):
+def get_alerts(portfolio_id: int, db: Session = Depends(get_db)):
+    """Return full alert history, deduplicated to one entry per
+    (symbol, alert_type, IST calendar day) — earliest detection wins.
+    Frontend groups by dateIST and checks live status against latest scan."""
+    from datetime import timezone, timedelta
+    IST = timezone(timedelta(hours=5, minutes=30))
+
+    # Fetch oldest-first so first occurrence per day wins dedup
     rows = (
         db.query(SentAlert)
         .filter(SentAlert.portfolio_id == portfolio_id)
-        .order_by(SentAlert.triggered_at.desc())
-        .limit(limit)
+        .order_by(SentAlert.triggered_at.asc())
         .all()
     )
-    return [
-        {
+
+    seen = set()
+    deduplicated = []
+    for r in rows:
+        dt_ist   = r.triggered_at.replace(tzinfo=timezone.utc).astimezone(IST)
+        date_str = dt_ist.strftime('%Y-%m-%d')
+        key      = (r.symbol, r.alert_type, date_str)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduplicated.append({
             "id":           r.id,
             "symbol":       r.symbol,
             "alertType":    r.alert_type,
             "triggeredAt":  r.triggered_at.isoformat(),
+            "dateIST":      date_str,
             "currentPrice": r.current_price,
             "emaValue":     r.ema_value,
             "distancePct":  r.distance_pct,
             "emailSent":    r.email_sent,
-        }
-        for r in rows
-    ]
+        })
+
+    # Return newest-first for display
+    deduplicated.reverse()
+    return deduplicated

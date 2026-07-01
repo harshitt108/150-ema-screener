@@ -63,6 +63,7 @@ class ScanResult(Base):
     health_category  = Column(String, nullable=True)
     health_details   = Column(Text, nullable=True)    # JSON breakdown
     no_data_json     = Column(Text, nullable=True)    # JSON list of symbols with no data
+    crosses_json     = Column(Text, nullable=True)    # JSON list of cross events for this scan
 
     portfolio = relationship("Portfolio", back_populates="scan_results")
 
@@ -169,6 +170,16 @@ class RuleAlert(Base):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    # Add columns introduced after initial schema without dropping existing data.
+    with engine.connect() as con:
+        for col, ddl in [("crosses_json", "TEXT")]:
+            try:
+                con.execute(__import__("sqlalchemy").text(
+                    f"ALTER TABLE scan_results ADD COLUMN {col} {ddl}"
+                ))
+                con.commit()
+            except Exception:
+                pass  # column already exists — ignore
 
 
 def get_db():

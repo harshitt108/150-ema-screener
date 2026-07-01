@@ -4,7 +4,7 @@ Core scan logic shared by the API refresh endpoint and the background scheduler.
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -19,13 +19,44 @@ logger = logging.getLogger(__name__)
 
 # ─── Low-level EMA fetch ──────────────────────────────────────────────────────
 
+def _nse_market_open() -> bool:
+    """Return True if NSE is currently in its trading session (9:15–15:30 IST,
+    Mon–Fri). We add a 15-min buffer after close so the final bar has time to
+    settle before we treat it as confirmed."""
+    IST   = timezone(timedelta(hours=5, minutes=30))
+    now   = datetime.now(IST)
+    if now.weekday() >= 5:          # Saturday / Sunday
+        return False
+    t = now.time()
+    from datetime import time as _t
+    return _t(9, 15) <= t < _t(15, 45)   # open + 15-min post-market buffer
+
+
 def _fetch_ema_status(symbol: str, timeframe: str = "daily") -> dict:
-    """Fetch OHLCV and return EMA snapshot for 20/50/150/200."""
+    """Fetch OHLCV and return EMA snapshot for 20/50/150/200.
+
+    For the portfolio alert engine (daily timeframe only) we always use
+    CONFIRMED daily closes.  During market hours the most-recent Yahoo bar
+    carries the live intraday price, not a closing price — including it lets
+    intraday noise (a stock dipping below an EMA and bouncing back the same
+    day) generate false alerts.  We drop that bar whenever the market is open
+    so every cross alert represents a real end-of-day event.
+    """
     symbol = symbol.upper().strip().replace(" ", "")
     interval, period = TIMEFRAME_MAP.get(timeframe, TIMEFRAME_MAP["daily"])
     df = fetch_ohlcv(f"{symbol}.NS", interval, period)
     if df is None or len(df) < 20:
         return {"symbol": symbol, "error": "no_data"}
+
+    # Drop today's incomplete bar during NSE market hours (daily only)
+    if timeframe == "daily" and _nse_market_open():
+        IST      = timezone(timedelta(hours=5, minutes=30))
+        today    = datetime.now(IST).date()
+        last_bar = df.index[-1].astimezone(IST).date()
+        if last_bar >= today:
+            df = df.iloc[:-1]   # use only fully-closed bars
+        if len(df) < 20:
+            return {"symbol": symbol, "error": "no_data"}
 
     close = df["Close"]
     current_price = round(float(close.iloc[-1]), 2)
@@ -150,19 +181,43 @@ def scan_portfolio(portfolio_id: int, db: Session) -> Optional[dict]:
     # Health score
     health = calculate_health_score(status_map)
 
-    # Detect crosses vs last scan
-    prev_scan = (
+    # Detect crosses vs the previous TRADING DAY's snapshot (IST calendar day).
+    # Using the most-recent scan regardless of date means a second scan on the
+    # same day always finds 0 changes — the stocks are already in their
+    # post-cross state. By always comparing against the last scan from a
+    # PREVIOUS day, every refresh today shows "what broke/recovered today."
+    # Fallback: if this is the first scan ever, or all scans are from today,
+    # use the oldest scan from today as the baseline.
+    IST = timezone(timedelta(hours=5, minutes=30))
+    today_ist = datetime.now(IST).date()
+
+    all_prev = (
         db.query(ScanResult)
         .filter(ScanResult.portfolio_id == portfolio_id)
         .order_by(ScanResult.scanned_at.desc())
-        .first()
+        .limit(30)          # enough history without a full table scan
+        .all()
     )
-    prev_status = json.loads(prev_scan.status_json) if prev_scan else {}
+
+    baseline = None
+    for s in all_prev:
+        scan_date = s.scanned_at.replace(tzinfo=timezone.utc).astimezone(IST).date()
+        if scan_date < today_ist:
+            baseline = s
+            break
+
+    if baseline is None and all_prev:
+        # All scans are from today — use the earliest one from today so at
+        # least intra-day changes are surfaced.
+        baseline = all_prev[-1]
+
+    prev_status = json.loads(baseline.status_json) if baseline else {}
     crosses = detect_crosses(prev_status, status_map)
 
     now = datetime.now(timezone.utc)
 
-    # Persist scan result
+    # Persist scan result (crosses_json stores the detected events so they
+    # survive page reloads without recomputing from two DB rows every time)
     scan_row = ScanResult(
         portfolio_id    = portfolio_id,
         scanned_at      = now,
@@ -171,6 +226,7 @@ def scan_portfolio(portfolio_id: int, db: Session) -> Optional[dict]:
         health_category = health["category"],
         health_details  = json.dumps(health),
         no_data_json    = json.dumps(no_data),
+        crosses_json    = json.dumps(crosses),
     )
     db.add(scan_row)
 
