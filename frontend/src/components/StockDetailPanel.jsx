@@ -49,7 +49,7 @@ function ChartAutoHeight({ onReady, ...props }) {
 }
 
 
-const API_BASE = 'http://localhost:8000'
+import { API_BASE } from '../apiBase'
 
 // ─── Signal badge ────────────────────────────────────────────────────────────
 function SignalBanner({ signals }) {
@@ -90,7 +90,7 @@ const TIMEFRAMES = [
 ]
 
 // ─── Main panel ──────────────────────────────────────────────────────────────
-export default function StockDetailPanel({ stock, timeframe: initialTimeframe, onClose, onPrev, onNext, currentIndex, totalCount, watchlist }) {
+export default function StockDetailPanel({ stock, timeframe: initialTimeframe, onClose, onPrev, onNext, currentIndex, totalCount, watchlist, keepTimeframeAcrossStocks = false }) {
   const [timeframe,  setTimeframe]  = useState(initialTimeframe || 'daily')
   const [chartData,  setChartData]  = useState(null)
   const [loading,    setLoading]    = useState(true)
@@ -113,10 +113,14 @@ export default function StockDetailPanel({ stock, timeframe: initialTimeframe, o
   // live signals for whichever timeframe/benchmark is currently selected.
   const [liveSignals, setLiveSignals] = useState(null)
 
-  // When parent navigates to a different stock, reset timeframe to the parent's default
+  // When parent navigates to a different stock, reset timeframe to the parent's
+  // default — this is the right behavior for the EMA / RS screeners, where the
+  // scan itself is timeframe-based. In non-screening contexts (Search, Watchlist,
+  // Index Scanner, Portfolio Guardian) the caller passes keepTimeframeAcrossStocks
+  // so the user's chosen timeframe is preserved as they page through stocks.
   useEffect(() => {
-    setTimeframe(initialTimeframe || 'daily')
-  }, [stock?.symbol, initialTimeframe])
+    if (!keepTimeframeAcrossStocks) setTimeframe(initialTimeframe || 'daily')
+  }, [stock?.symbol, initialTimeframe, keepTimeframeAcrossStocks])
 
   // Keyboard navigation
   useEffect(() => {
@@ -176,7 +180,7 @@ export default function StockDetailPanel({ stock, timeframe: initialTimeframe, o
       .then(d => { if (!cancelled) setSignalHistory(d) })
       .catch(() => {})
 
-    fetch(`${API_BASE}/api/rating-history/${sym}?timeframe=daily&benchmark=${bench}`)
+    fetch(`${API_BASE}/api/rating-history/${sym}?timeframe=daily&benchmark=${bench}&days=100`)
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (!cancelled) setRatingHistory(d) })
       .catch(() => {})
@@ -237,9 +241,16 @@ export default function StockDetailPanel({ stock, timeframe: initialTimeframe, o
               <TrendingUp size={15} className="text-violet-400" />
             </div>
             <div className="min-w-0">
-              <h2 className="text-base font-bold text-white leading-tight">{stock.symbol}</h2>
+              <h2 className="text-base font-bold text-white leading-tight truncate">
+                {stock.symbol}
+                {stock.name && stock.name !== stock.symbol && (
+                  <span className="ml-2 text-xs font-normal text-slate-500">{stock.name}</span>
+                )}
+              </h2>
               <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                <span className="text-sm font-mono text-slate-300">₹{stock.ltp?.toLocaleString('en-IN')}</span>
+                {stock.ltp != null && (
+                  <span className="text-sm font-mono text-slate-300">₹{stock.ltp.toLocaleString('en-IN')}</span>
+                )}
                 {stock.benchmark && (
                   <span className="text-xs text-slate-500 bg-[#1a1a2e] px-1.5 py-0.5 rounded">
                     vs {stock.benchmark}
@@ -306,7 +317,7 @@ export default function StockDetailPanel({ stock, timeframe: initialTimeframe, o
               {!loading && !error && chartData && (
                 <ChartErrorBoundary resetKey={`${stock.symbol}:${timeframe}`}>
                   <DrawingOverlay chartApiRef={chartApiRef} chartVersion={chartVersion}
-                    storageKey={`${stock.symbol}:${timeframe}`}>
+                    storageKey={stock.symbol} migrateKey={`${stock.symbol}:${timeframe}`}>
                     <ChartAutoHeight
                       candles={chartData.candles}
                       ema20={chartData.ema20}

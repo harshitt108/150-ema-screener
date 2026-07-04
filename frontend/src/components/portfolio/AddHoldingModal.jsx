@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { X } from 'lucide-react'
 
-const API_BASE = 'http://localhost:8000'
+import { API_BASE } from '../../apiBase'
 
 export default function AddHoldingModal({ portfolioId, holding, onSave, onClose }) {
   const isEdit = Boolean(holding)

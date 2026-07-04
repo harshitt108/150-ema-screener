@@ -165,7 +165,7 @@ export default function CandleChart({
       // The overlay uses each pane's own series for coordinate conversion so
       // trendlines drawn in MACD / Ratio panes stay anchored to those scales
       // (not the main price scale, which would cause them to drift on zoom).
-      onReady?.({ chart, mainSeries: candleSeries, macdSeries: macdSeriesRef, ratioSeries: ratioSeriesRef })
+      onReady?.({ chart, mainSeries: candleSeries, macdSeries: macdSeriesRef, ratioSeries: ratioSeriesRef, candles })
 
       // ── Pane sizing via STRETCH FACTORS (v5 proportional API) ──────────
       // New panes default to a tiny stretch factor, which is why the MACD/Ratio

@@ -4,12 +4,17 @@ import ResultsTable from './components/ResultsTable'
 import RSResultsTable from './components/RSResultsTable'
 import StockDetailPanel from './components/StockDetailPanel'
 import WatchlistPanel from './components/WatchlistPanel'
+import StockSearch from './components/StockSearch'
+import IndexScanner from './components/IndexScanner'
+import RatingScreener from './components/RatingScreener'
+import BreakoutScreener from './components/BreakoutScreener'
 import useWatchlist from './hooks/useWatchlist'
+import useRecentSearches from './hooks/useRecentSearches'
 import PortfolioList from './pages/PortfolioList'
 import PortfolioDetail from './pages/PortfolioDetail'
 import EmailConfigModal from './components/portfolio/EmailConfigModal'
 import Toaster from './components/Toast'
-import { Activity, TrendingUp, PanelLeftClose, PanelLeftOpen, SlidersHorizontal, Star, Briefcase, Mail } from 'lucide-react'
+import { Activity, TrendingUp, PanelLeftClose, PanelLeftOpen, SlidersHorizontal, Star, Briefcase, Mail, Search, Layers, Gauge, Rocket } from 'lucide-react'
 import './index.css'
 
 const DEFAULT_PRICE_FILTERS = {
@@ -36,7 +41,7 @@ const DEFAULT_RS_FILTERS = {
   priceDistancePct: 3,
 }
 
-const API_BASE = 'http://localhost:8000'
+import { API_BASE } from './apiBase'
 
 export default function App() {
   // Top-level navigation: 'scanner' | 'portfolios'
@@ -50,7 +55,9 @@ export default function App() {
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [watchlistOpen, setWatchlistOpen] = useState(false)
   const [wlDetail, setWlDetail] = useState(null)  // { stocks, index, timeframe } for watchlist chart panel
+  const [searchStock, setSearchStock] = useState(null)  // stock opened from the Search module
   const watchlist = useWatchlist()
+  const recentSearches = useRecentSearches()
   const [priceFilters, setPriceFilters] = useState(DEFAULT_PRICE_FILTERS)
   const [rsFilters, setRsFilters] = useState(DEFAULT_RS_FILTERS)
 
@@ -174,6 +181,50 @@ export default function App() {
               EMA Scanner
             </button>
             <button
+              onClick={() => setTopNav('search')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all
+                ${topNav === 'search'
+                  ? 'bg-violet-600 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+                }`}
+            >
+              <Search size={13} />
+              Search Charts
+            </button>
+            <button
+              onClick={() => setTopNav('indices')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all
+                ${topNav === 'indices'
+                  ? 'bg-violet-600 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+                }`}
+            >
+              <Layers size={13} />
+              Index Scanner
+            </button>
+            <button
+              onClick={() => setTopNav('rating')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all
+                ${topNav === 'rating'
+                  ? 'bg-violet-600 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+                }`}
+            >
+              <Gauge size={13} />
+              Rating Screener
+            </button>
+            <button
+              onClick={() => setTopNav('breakout')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all
+                ${topNav === 'breakout'
+                  ? 'bg-violet-600 text-white shadow'
+                  : 'text-slate-400 hover:text-slate-200'
+                }`}
+            >
+              <Rocket size={13} />
+              Breakout Screener
+            </button>
+            <button
               onClick={() => { setTopNav('portfolios'); setOpenPortfolioId(null) }}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all
                 ${topNav === 'portfolios'
@@ -188,7 +239,7 @@ export default function App() {
 
           {/* Right side actions */}
           <div className="flex items-center gap-3 flex-shrink-0">
-            {topNav === 'scanner' && (
+            {(topNav === 'scanner' || topNav === 'rating' || topNav === 'breakout') && (
               <button
                 onClick={() => setWatchlistOpen(true)}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors
@@ -238,8 +289,28 @@ export default function App() {
             />
       )}
 
+      {/* Search Charts module */}
+      {topNav === 'search' && (
+        <StockSearch
+          recentSearches={recentSearches}
+          onSelect={(s) => {
+            recentSearches.addRecent(s)
+            setSearchStock({ symbol: s.symbol, name: s.name, ltp: null, benchmark: 'NIFTY 50' })
+          }}
+        />
+      )}
+
+      {/* Index Scanner module */}
+      {topNav === 'indices' && <IndexScanner />}
+
+      {/* Rating Screener module */}
+      {topNav === 'rating' && <RatingScreener watchlist={watchlist} />}
+
+      {/* Breakout Screener module */}
+      {topNav === 'breakout' && <BreakoutScreener watchlist={watchlist} />}
+
       {/* Scanner main layout */}
-      {topNav !== 'portfolios' && <div className="max-w-7xl mx-auto px-4 py-6">
+      {topNav === 'scanner' && <div className="max-w-7xl mx-auto px-4 py-6">
         <div className="flex gap-6 items-start">
 
           {/* Collapsible sidebar */}
@@ -364,10 +435,24 @@ export default function App() {
         onScanWatchlist={(list) => {
           const syms = (list?.stocks || []).map(s => s.symbol).filter(Boolean)
           if (!syms.length) return
+          setTopNav('scanner')  // watchlist scans render in the EMA Scanner view
           setScanMode('price')
           handleScan(syms)
         }}
         onOpenStock={(stocks, index, timeframe) => setWlDetail({ stocks, index, timeframe })}
+      />
+    )}
+
+    {/* Chart panel for a stock opened from the Search module (no prev/next set) */}
+    {searchStock && (
+      <StockDetailPanel
+        stock={searchStock}
+        timeframe="daily"
+        onClose={() => setSearchStock(null)}
+        currentIndex={0}
+        totalCount={0}
+        watchlist={watchlist}
+        keepTimeframeAcrossStocks
       />
     )}
 
@@ -382,6 +467,7 @@ export default function App() {
         currentIndex={wlDetail.index}
         totalCount={wlDetail.stocks.length}
         watchlist={watchlist}
+        keepTimeframeAcrossStocks
       />
     )}
 

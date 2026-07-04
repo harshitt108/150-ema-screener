@@ -13,7 +13,7 @@ import { HealthScoreGauge, HealthBreakdown } from '../components/portfolio/Healt
 import StockDetailPanel from '../components/StockDetailPanel'
 import { EmaGroup, MomentumGroup } from '../components/IndicatorGroups'
 
-const API_BASE = 'http://localhost:8000'
+import { API_BASE } from '../apiBase'
 
 const TYPE_LABEL = { investment: 'Investment', swing: 'Swing Trading', custom: 'Custom' }
 
@@ -861,6 +861,7 @@ export default function PortfolioDetail({ portfolioId, onBack }) {
           onNext={() => openStockAt(Math.min(holdings.length - 1, selectedIdx + 1), holdings)}
           currentIndex={selectedIdx}
           totalCount={holdings.length}
+          keepTimeframeAcrossStocks
         />
       )}
 

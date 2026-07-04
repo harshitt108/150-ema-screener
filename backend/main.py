@@ -11,6 +11,7 @@ from scanner import scan_stocks, calculate_ema, calculate_avg_volume, TIMEFRAME_
 from rs_scanner import scan_rs_stocks, BENCHMARK_NAMES, BENCHMARK_MAP, _compute_ratio, _normalize_index, _rs_trend
 from data_fetcher import fetch_ohlcv, SESSION
 from indicators import compute_signals, compute_mtf_snapshot, compute_signal_history, compute_rating_history, rsi as calc_rsi
+from index_scanner import resolve_yahoo_symbol
 from database import init_db
 from portfolio_routes import router as portfolio_router
 from monitoring_routes import router as monitoring_router
@@ -58,6 +59,37 @@ class ScanRequest(BaseModel):
 @app.get("/api/indices")
 def get_indices():
     return {"indices": INDEX_NAMES}
+
+
+@app.get("/api/index-constituents")
+def index_constituents(index: str):
+    """Constituent stocks of an NSE index — powers the 'View Constituents' option
+    on the Index Scanner cards. Returns [] with available=False for indices we
+    don't have a constituent list for."""
+    from index_constituents import get_constituents, is_representative
+
+    cons = get_constituents(index)
+    if cons is None:
+        return {"index": index, "available": False, "count": 0, "constituents": [], "representative": False}
+    return {
+        "index": index,
+        "available": True,
+        "count": len(cons),
+        "constituents": cons,
+        "representative": is_representative(index),
+    }
+
+
+@app.get("/api/index-scan")
+def index_scan(timeframe: str = "daily"):
+    """Index Scanner dashboard: recent strong/weak sectors + a full table of
+    every major NSE index with its EMA structure (20/50/150/200), technical
+    score and trailing returns."""
+    from index_scanner import build_dashboard
+
+    if timeframe not in TIMEFRAME_MAP:
+        raise HTTPException(status_code=400, detail=f"Unknown timeframe: {timeframe}")
+    return build_dashboard(timeframe)
 
 
 @app.post("/api/scan")
@@ -185,7 +217,7 @@ def get_chart(symbol: str, timeframe: str = "daily", benchmark: str = "NIFTY 50"
     interval, _scan_period = TIMEFRAME_MAP[timeframe]
     # Use the chart's own (longer) range so the panel shows more history
     period = _CHART_RANGE.get(timeframe, _scan_period)
-    df = fetch_ohlcv(f"{symbol}.NS", interval, period)
+    df = fetch_ohlcv(resolve_yahoo_symbol(symbol), interval, period)
     if df is None or len(df) < 20:
         raise HTTPException(status_code=404, detail=f"No data for {symbol}")
 
@@ -370,7 +402,7 @@ def get_signals(symbol: str, timeframe: str = "daily", benchmark: str = "NIFTY 5
     if timeframe not in TIMEFRAME_MAP:
         raise HTTPException(status_code=400, detail=f"Unknown timeframe: {timeframe}")
     interval, period = TIMEFRAME_MAP[timeframe]
-    df = fetch_ohlcv(f"{symbol}.NS", interval, period)
+    df = fetch_ohlcv(resolve_yahoo_symbol(symbol), interval, period)
     if df is None or len(df) < 30:
         raise HTTPException(status_code=404, detail=f"No data for {symbol}")
 
@@ -401,7 +433,7 @@ def mtf_matrix(symbol: str, benchmark: str = "NIFTY 50"):
     def build_column(tf):
         interval, scan_period = TIMEFRAME_MAP[tf]
         period = _CHART_RANGE.get(tf, scan_period)
-        df = fetch_ohlcv(f"{symbol}.NS", interval, period)
+        df = fetch_ohlcv(resolve_yahoo_symbol(symbol), interval, period)
         if df is None or len(df) < 30:
             return {"timeframe": tf, "label": _MTF_LABELS[tf], "available": False}
 
@@ -450,7 +482,7 @@ def signal_history(symbol: str, timeframe: str = "daily", benchmark: str = "NIFT
         raise HTTPException(status_code=400, detail=f"Unknown timeframe: {timeframe}")
     interval, scan_period = TIMEFRAME_MAP[timeframe]
     period = _CHART_RANGE.get(timeframe, scan_period)
-    df = fetch_ohlcv(f"{symbol}.NS", interval, period)
+    df = fetch_ohlcv(resolve_yahoo_symbol(symbol), interval, period)
     if df is None or len(df) < 30:
         raise HTTPException(status_code=404, detail=f"No data for {symbol}")
 
@@ -473,7 +505,7 @@ def rating_history(symbol: str, timeframe: str = "daily", benchmark: str = "NIFT
         raise HTTPException(status_code=400, detail=f"Unknown timeframe: {timeframe}")
     interval, scan_period = TIMEFRAME_MAP[timeframe]
     period = _CHART_RANGE.get(timeframe, scan_period)
-    df = fetch_ohlcv(f"{symbol}.NS", interval, period)
+    df = fetch_ohlcv(resolve_yahoo_symbol(symbol), interval, period)
     if df is None or len(df) < 30:
         raise HTTPException(status_code=404, detail=f"No data for {symbol}")
 
@@ -488,6 +520,112 @@ def rating_history(symbol: str, timeframe: str = "daily", benchmark: str = "NIFT
     return {"symbol": symbol, "timeframe": timeframe, "history": history}
 
 
+# ── Rating Screener (rating shifts / big score moves, daily only) ───────────
+
+class RatingScanRequest(BaseModel):
+    indices: list[str] = Field(default=["NIFTY 50"])
+    symbols: Optional[list[str]] = Field(default=None)  # explicit list (e.g. watchlist)
+    benchmark: str = Field(default="NIFTY 50")
+    lookback_days: int = Field(default=1, ge=1, le=10)
+    move_threshold: float = Field(default=20.0, ge=5.0, le=100.0)
+
+
+@app.post("/api/rating-scan")
+def rating_scan(req: RatingScanRequest):
+    """Rating Screener: stocks whose walk-forward Rating History score changed
+    bucket (e.g. Hold → Buy) or moved ≥ threshold points within the last N
+    trading days. Daily timeframe only."""
+    from rating_screener import scan_rating_shifts
+
+    logger.info(f"Rating scan request: {req}")
+
+    if req.symbols:
+        symbols = [s.upper().strip().replace(" ", "") for s in req.symbols if s and s.strip()]
+        if not symbols:
+            raise HTTPException(status_code=400, detail="No valid symbols provided")
+    else:
+        valid = [i for i in req.indices if i in INDEX_NAMES]
+        if not valid:
+            raise HTTPException(status_code=400, detail="No valid indices provided")
+        symbols = get_symbols(valid)
+        if not symbols:
+            raise HTTPException(status_code=400, detail="No symbols found for selected indices")
+
+    logger.info(f"Rating-scanning {len(symbols)} symbols...")
+
+    results, no_data = scan_rating_shifts(
+        symbols=symbols,
+        benchmark=req.benchmark,
+        lookback_days=req.lookback_days,
+        move_threshold=req.move_threshold,
+    )
+
+    return {
+        "results": results,
+        "scanned": len(symbols),
+        "found": len(results),
+        "noData": no_data,
+        "analyzed": len(symbols) - len(no_data),
+    }
+
+
+# ── Breakout Screener (150-EMA reclaim + swing-high break, daily only) ──────
+
+class BreakoutScanRequest(BaseModel):
+    indices: list[str] = Field(default=["NIFTY 50"])
+    symbols: Optional[list[str]] = Field(default=None)  # explicit list (e.g. watchlist)
+    benchmark: str = Field(default="NIFTY 50")
+    timeframe: str = Field(default="daily")
+    swing_period: int = Field(default=10, ge=3, le=50)
+    cross_window: int = Field(default=30, ge=5, le=120)
+    lookback_bars: int = Field(default=10, ge=1, le=30)
+
+
+@app.post("/api/breakout-scan")
+def breakout_scan(req: BreakoutScanRequest):
+    """Breakout Screener: stocks whose close (and/or ratio vs the benchmark)
+    crossed above its 150 EMA within `cross_window` bars and then closed above
+    the prior `swing_period`-bar high, within the last `lookback_bars` bars of
+    the chosen timeframe."""
+    from breakout_screener import scan_breakouts
+
+    logger.info(f"Breakout scan request: {req}")
+
+    if req.timeframe not in TIMEFRAME_MAP:
+        raise HTTPException(status_code=400, detail=f"Unknown timeframe: {req.timeframe}")
+
+    if req.symbols:
+        symbols = [s.upper().strip().replace(" ", "") for s in req.symbols if s and s.strip()]
+        if not symbols:
+            raise HTTPException(status_code=400, detail="No valid symbols provided")
+    else:
+        valid = [i for i in req.indices if i in INDEX_NAMES]
+        if not valid:
+            raise HTTPException(status_code=400, detail="No valid indices provided")
+        symbols = get_symbols(valid)
+        if not symbols:
+            raise HTTPException(status_code=400, detail="No symbols found for selected indices")
+
+    logger.info(f"Breakout-scanning {len(symbols)} symbols...")
+
+    results, no_data = scan_breakouts(
+        symbols=symbols,
+        benchmark=req.benchmark,
+        timeframe=req.timeframe,
+        swing_period=req.swing_period,
+        cross_window=req.cross_window,
+        lookback_bars=req.lookback_bars,
+    )
+
+    return {
+        "results": results,
+        "scanned": len(symbols),
+        "found": len(results),
+        "noData": no_data,
+        "analyzed": len(symbols) - len(no_data),
+    }
+
+
 # ── Compare stocks ───────────────────────────────────────────────────────────
 
 @app.get("/api/compare-snapshot/{symbol}")
@@ -498,7 +636,7 @@ def compare_snapshot(symbol: str, timeframe: str = "daily", benchmark: str = "NI
         raise HTTPException(status_code=400, detail=f"Unknown timeframe: {timeframe}")
     interval, scan_period = TIMEFRAME_MAP[timeframe]
     period = _CHART_RANGE.get(timeframe, scan_period)
-    df = fetch_ohlcv(f"{symbol}.NS", interval, period)
+    df = fetch_ohlcv(resolve_yahoo_symbol(symbol), interval, period)
     if df is None or len(df) < 30:
         raise HTTPException(status_code=404, detail=f"No data for {symbol}")
 
@@ -556,13 +694,50 @@ def compare_snapshot(symbol: str, timeframe: str = "daily", benchmark: str = "NI
     }
 
 
+# Full curated NSE universe (~500 symbols) the scanner can analyze, with company
+# names. Yahoo's search endpoint fails to surface some valid NSE tickers — notably
+# ampersand names like M&M and ARE&M — so we match against the local universe by
+# BOTH ticker and company name to guarantee search/scanner parity: anything
+# scannable is also findable, whether the user types "M&M" or "mahindra".
+from symbol_names import SYMBOL_NAMES
+_CURATED_SYMBOLS = sorted(set(get_symbols(INDEX_NAMES)))
+
+
 @app.get("/api/search-symbols")
 def search_symbols(q: str = ""):
-    """Free-text symbol search across all NSE-listed equities (via Yahoo's
-    search endpoint) — powers the Compare Stocks picker."""
+    """Free-text symbol search across NSE-listed equities. Combines the local
+    curated universe (matched by ticker AND company name — guarantees every
+    scannable stock is findable, incl. M&M etc.) with Yahoo's search endpoint
+    (fills in stocks outside the curated list). Powers the Compare Stocks picker
+    and the Search Charts module."""
     q = q.strip()
     if len(q) < 1:
         return {"results": []}
+
+    # Local matches first — highest confidence (NSE + scanner-supported).
+    # Rank: ticker prefix > name prefix > ticker/name substring.
+    qu = q.upper()
+    tick_prefix, name_prefix, substr = [], [], []
+    for s in _CURATED_SYMBOLS:
+        name = SYMBOL_NAMES.get(s, s)
+        nu = name.upper()
+        if s.startswith(qu):
+            tick_prefix.append(s)
+        elif nu.startswith(qu):
+            name_prefix.append(s)
+        elif qu in s or qu in nu:
+            substr.append(s)
+
+    seen = set()
+    results = []
+    for sym in tick_prefix + name_prefix + substr:
+        if sym in seen:
+            continue
+        seen.add(sym)
+        results.append({"symbol": sym, "name": SYMBOL_NAMES.get(sym, sym)})
+
+    # Yahoo results (fills in company-name matches and stocks outside the
+    # curated list), skipping any ticker already surfaced locally.
     try:
         resp = SESSION.get(
             "https://query1.finance.yahoo.com/v1/finance/search",
@@ -573,16 +748,20 @@ def search_symbols(q: str = ""):
     except Exception:
         data = {}
 
-    results = []
     for item in data.get("quotes", []):
         sym = item.get("symbol", "")
         if not sym.endswith(".NS"):
             continue
+        base = sym[:-3]
+        if base in seen:
+            continue
+        seen.add(base)
         results.append({
-            "symbol": sym[:-3],
-            "name": item.get("shortname") or item.get("longname") or sym[:-3],
+            "symbol": base,
+            "name": item.get("shortname") or item.get("longname") or base,
         })
-    return {"results": results}
+
+    return {"results": results[:20]}
 
 
 @app.get("/api/financials/{symbol}")
@@ -598,6 +777,32 @@ def get_financials(symbol: str):
     return data
 
 
+@app.get("/api/data-health")
+def data_health(scope: str = "quick"):
+    """Data-quality sweep over the curated universe.
+    scope=quick → daily timeframe only (~500 fetches, fast sanity check).
+    scope=full  → all 7 timeframes (~3500 fetches, several minutes)."""
+    from data_health import run_health_sweep
+
+    if scope not in ("quick", "full"):
+        raise HTTPException(status_code=400, detail="scope must be 'quick' or 'full'")
+    timeframes = None if scope == "full" else ["daily"]
+    return run_health_sweep(timeframes=timeframes)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# ── Static frontend ──────────────────────────────────────────────────────────
+# When frontend/dist exists (production / Docker), this one FastAPI process
+# serves the whole product: API routes above win, everything else falls through
+# to the built React app. In development the Vite dev server (5173) is used
+# instead and this mount simply never matches anything the frontend requests.
+from pathlib import Path
+from fastapi.staticfiles import StaticFiles
+
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+if _FRONTEND_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=_FRONTEND_DIST, html=True), name="frontend")

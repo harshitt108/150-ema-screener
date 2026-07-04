@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Search, X } from 'lucide-react'
 
-const API_BASE = 'http://localhost:8000'
+import { API_BASE } from '../apiBase'
 
 const TIMEFRAMES = [
   { value: '5min',    label: '5m'  },

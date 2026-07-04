@@ -9,6 +9,11 @@
  *  - Delete a selected shape with Delete/Backspace, or the × button.
  *  - Shapes are anchored in DATA coordinates (time/price) so they stick to the
  *    candles when you pan/zoom.
+ *  - Anchors store canonical epoch seconds (`t`), NOT bar indices, so one set
+ *    of drawings per SYMBOL renders on every timeframe: a trend line drawn on
+ *    the daily chart appears in the same place on the 1h/15m/5m charts. Times
+ *    are mapped to the active chart's bars at render time (with interpolation
+ *    between bars and extrapolation past the loaded history).
  */
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { Trash2 } from 'lucide-react'
@@ -23,10 +28,17 @@ const px  = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by)
 // localStorage may hold legacy-format or partially-written drawings (the draw
 // tools were rebuilt, so old entries have a different schema). A single bad
 // entry must NOT crash the app, so we validate every drawing and drop anything
-// malformed. A point is anchored by `logical` (new) or `time` (legacy) + price.
+// malformed. A point is anchored by `t` (epoch seconds — current, timeframe-
+// independent), `logical` (bar index — legacy, per-timeframe) or `time` + price.
 const isNum   = v => typeof v === 'number' && isFinite(v)
-const hasTime = p => isNum(p.logical) || (p.time !== null && p.time !== undefined)
+const hasTime = p => isNum(p.t) || isNum(p.logical) || (p.time !== null && p.time !== undefined)
 const validPt = p => p && typeof p === 'object' && isNum(p.price) && hasTime(p)
+const hasAnchor = d => isNum(d.t) || isNum(d.logical) || (d.time !== null && d.time !== undefined)
+
+// Chart bar time → epoch seconds. Daily+ bars carry "YYYY-MM-DD" strings,
+// intraday bars carry unix seconds already.
+const timeToEpoch = time =>
+  typeof time === 'number' ? time : Date.parse(`${time}T00:00:00Z`) / 1000
 
 function sanitizeDrawings(raw) {
   if (!Array.isArray(raw)) return []
@@ -38,8 +50,8 @@ function sanitizeDrawings(raw) {
       case 'short':   return validPt(d.p1) && validPt(d.p2)
       case 'channel': return validPt(d.p1) && validPt(d.p2) && validPt(d.p3)
       case 'hline':   return isNum(d.price)
-      case 'vline':   return isNum(d.logical) || (d.time !== null && d.time !== undefined)
-      case 'text':    return (isNum(d.logical) || (d.time !== null && d.time !== undefined)) && isNum(d.price) && typeof d.text === 'string'
+      case 'vline':   return hasAnchor(d)
+      case 'text':    return hasAnchor(d) && isNum(d.price) && typeof d.text === 'string'
       default:        return false
     }
   })
@@ -97,7 +109,7 @@ const HINTS = {
 
 const STORE_PREFIX = 'chartDrawings:'
 
-export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, children }) {
+export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, migrateKey, children }) {
   const wrapRef = useRef(null)
   const [drawings,   setDrawings]   = useState([])
   const [tool,       setTool]       = useState('cursor')
@@ -120,11 +132,11 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
   colorRef.current = color
   toolRef.current  = tool
 
-  // ── Persistence (localStorage, per symbol+timeframe) ───────────────────────
+  // ── Persistence (localStorage, per SYMBOL — drawings show on all timeframes) ─
   const keyRef       = useRef(storageKey)
   const hydratingRef = useRef(true)
 
-  // Load saved drawings whenever the chart's symbol/timeframe changes
+  // Load saved drawings whenever the chart's symbol changes
   useEffect(() => {
     hydratingRef.current = true
     keyRef.current = storageKey
@@ -213,13 +225,103 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
     return () => cancelAnimationFrame(raf)
   }, [chartVersion, getPaneTops]) // eslint-disable-line
 
+  // ── Time anchoring: epoch seconds ↔ bar position on the ACTIVE chart ──────
+  // Drawings store epoch times so they carry across timeframes. Each chart maps
+  // them to (fractional) logical bar indices: binary-search the candle times,
+  // interpolate between bars, extrapolate past the ends by the median bar
+  // duration. Cached per candle array (rebuilt when the chart data changes).
+  const epochsRef = useRef({ candles: null, arr: [], barSec: 86400 })
+  const getEpochs = useCallback(() => {
+    const candles = chartApiRef.current?.candles
+    if (!candles?.length) return null
+    if (epochsRef.current.candles !== candles) {
+      const arr = candles.map(c => timeToEpoch(c.time))
+      const diffs = []
+      for (let i = 1; i < arr.length; i++) diffs.push(arr[i] - arr[i - 1])
+      diffs.sort((a, b) => a - b)
+      const barSec = diffs.length ? diffs[Math.floor(diffs.length / 2)] : 86400
+      epochsRef.current = { candles, arr, barSec }
+    }
+    return epochsRef.current
+  }, []) // eslint-disable-line
+
+  const epochToLogical = useCallback((t) => {
+    const e = getEpochs()
+    if (!e || !isNum(t)) return null
+    const { arr, barSec } = e
+    const n = arr.length
+    if (t <= arr[0])     return (t - arr[0]) / barSec
+    if (t >= arr[n - 1]) return (n - 1) + (t - arr[n - 1]) / barSec
+    let lo = 0, hi = n - 1
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1
+      if (arr[mid] <= t) lo = mid; else hi = mid
+    }
+    const span = arr[hi] - arr[lo]
+    return lo + (span > 0 ? (t - arr[lo]) / span : 0)
+  }, [getEpochs])
+
+  const logicalToEpoch = useCallback((logical) => {
+    const e = getEpochs()
+    if (!e || !isNum(logical)) return null
+    const { arr, barSec } = e
+    const n = arr.length
+    if (logical <= 0)     return arr[0] + logical * barSec
+    if (logical >= n - 1) return arr[n - 1] + (logical - (n - 1)) * barSec
+    const lo = Math.floor(logical)
+    return arr[lo] + (logical - lo) * (arr[lo + 1] - arr[lo])
+  }, [getEpochs])
+
+  // One-time migration of the old per-timeframe store. Legacy drawings are
+  // anchored by bar index, which only means something on the timeframe they
+  // were drawn on — so each legacy set is converted exactly when ITS chart is
+  // up (candles present), then folded into the per-symbol store and removed.
+  // (Must live BELOW the anchoring helpers — the deps array reads them at
+  // render time, before any effect runs.)
+  useEffect(() => {
+    if (!migrateKey || migrateKey === storageKey) return
+    if (!chartApiRef.current?.candles?.length) return
+    const legacyRaw = localStorage.getItem(STORE_PREFIX + migrateKey)
+    if (legacyRaw == null) return
+    let legacy
+    try { legacy = sanitizeDrawings(JSON.parse(legacyRaw)) } catch { legacy = [] }
+    localStorage.removeItem(STORE_PREFIX + migrateKey)
+    if (!legacy.length) return
+
+    const anchorT = p => isNum(p.t) ? p.t
+      : isNum(p.logical) ? logicalToEpoch(p.logical)
+      : p.time != null ? timeToEpoch(p.time) : null
+    const upPt = p => ({ t: anchorT(p), price: p.price, pane: p.pane ?? 0 })
+    const upgraded = legacy.map(d => {
+      switch (d.type) {
+        case 'trendline':
+        case 'long':
+        case 'short':   return { ...d, p1: upPt(d.p1), p2: upPt(d.p2) }
+        case 'channel': return { ...d, p1: upPt(d.p1), p2: upPt(d.p2), p3: upPt(d.p3) }
+        case 'vline':
+        case 'text':    return { ...d, t: anchorT(d), logical: undefined, time: undefined }
+        default:        return d   // hline — already timeframe-free
+      }
+    })
+
+    setDrawings(prev => {
+      const merged = [...prev, ...upgraded]
+      // Persist directly — the debounced persist effect may still be gated by
+      // the hydration flag when the chart comes up.
+      try { localStorage.setItem(STORE_PREFIX + keyRef.current, JSON.stringify(merged)) } catch { /* ignore */ }
+      return merged
+    })
+  }, [chartVersion, migrateKey, storageKey, logicalToEpoch]) // eslint-disable-line
+
   // ── Coordinate helpers ───────────────────────────────────────────────────
   const wrapCoords = useCallback(e => {
     const r = wrapRef.current.getBoundingClientRect()
     return { x: e.clientX - r.left, y: e.clientY - r.top }
   }, [])
 
-  // Convert full-chart {x,y} → {logical, price, pane}.
+  // Convert full-chart {x,y} → {t, logical, price, pane}. `t` (epoch seconds)
+  // is the canonical anchor that survives timeframe switches; `logical` is kept
+  // for same-frame pixel math during the gesture.
   // Subtracts the pane's top offset so we pass pane-local Y to coordinateToPrice.
   const toData = useCallback(({ x, y }) => {
     const api = chartApiRef.current
@@ -231,19 +333,34 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
       const series  = seriesForPane(paneIdx)
       const price   = series?.coordinateToPrice(y - paneTop)   // pane-local Y
       if (price == null) return null
-      return { logical, price, pane: paneIdx }
+      return { t: logicalToEpoch(logical), logical, price, pane: paneIdx }
     } catch { return null }
-  }, [getPaneAt, seriesForPane]) // eslint-disable-line
+  }, [getPaneAt, seriesForPane, logicalToEpoch]) // eslint-disable-line
 
-  // Convert {logical, price, pane} → full-chart {x,y}.
+  // X pixel for a point/drawing anchored by `t` (current), `logical` or `time`
+  // (both legacy, valid only on the timeframe they were drawn on).
+  const anchorToX = useCallback((pt) => {
+    const api = chartApiRef.current
+    if (!api) return null
+    try {
+      if (isNum(pt.t)) {
+        const logical = epochToLogical(pt.t)
+        return logical != null ? api.chart.timeScale().logicalToCoordinate(logical) : null
+      }
+      if (isNum(pt.logical)) return api.chart.timeScale().logicalToCoordinate(pt.logical)
+      if (pt.time != null)   return api.chart.timeScale().timeToCoordinate(pt.time)
+      return null
+    } catch { return null }
+  }, [epochToLogical]) // eslint-disable-line
+
+  // Convert {t | logical | time, price, pane} → full-chart {x,y}.
   // Adds the pane's top offset to the pane-local Y from priceToCoordinate.
   const toPx = useCallback((pt) => {
     const api = chartApiRef.current
     if (!api || !pt) return null
-    const { logical, price, time, pane = 0 } = pt
+    const { price, pane = 0 } = pt
     try {
-      let x = logical != null ? api.chart.timeScale().logicalToCoordinate(logical) : null
-      if (x == null && time != null) x = api.chart.timeScale().timeToCoordinate(time)
+      const x = anchorToX(pt)
       const series   = seriesForPane(pane)
       const paneLocalY = series?.priceToCoordinate(price)       // pane-local Y
       if (x == null || paneLocalY == null) return null
@@ -251,19 +368,51 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
       const paneTop  = tops[pane] ?? 0
       return { x, y: paneLocalY + paneTop }                     // → full-chart Y
     } catch { return null }
-  }, [seriesForPane, getPaneTops]) // eslint-disable-line
+  }, [seriesForPane, getPaneTops, anchorToX]) // eslint-disable-line
 
-  // priceY for hlines — always main pane (top=0, so pane-local = full-chart)
-  const priceY   = p => { try { return chartApiRef.current?.mainSeries.priceToCoordinate(p) } catch { return null } }
-  const logicalX = l => { try { return chartApiRef.current?.chart.timeScale().logicalToCoordinate(l) } catch { return null } }
-  const timeX    = t => { try { return chartApiRef.current?.chart.timeScale().timeToCoordinate(t) } catch { return null } }
+  // priceY for hlines — pane-aware: convert on that pane's own series scale and
+  // offset by the pane top. pane 0 (main) keeps the original fast path.
+  const priceY = (p, pane = 0) => {
+    try {
+      if (!pane) return chartApiRef.current?.mainSeries.priceToCoordinate(p)
+      const y = seriesForPane(pane)?.priceToCoordinate(p)
+      if (y == null) return null
+      return y + (getPaneTops()[pane] ?? 0)
+    } catch { return null }
+  }
+  const logicalAtX = x => { try { return chartApiRef.current?.chart.timeScale().coordinateToLogical(x) } catch { return null } }
 
-  const W = wrapRef.current?.clientWidth || 2000
+  // Resolve a logical index to the time of the nearest candle. Candle indices
+  // map 1:1 to logical indices; a fractional/out-of-range logical snaps to the
+  // closest bar (matches TradingView's vertical-line date snapping).
+  const timeAtLogical = (logical) => {
+    const candles = chartApiRef.current?.candles
+    if (!candles?.length || logical == null || !isFinite(logical)) return null
+    const idx = Math.max(0, Math.min(candles.length - 1, Math.round(logical)))
+    return candles[idx]?.time ?? null
+  }
+
+  // Format a candle time for the vertical-line tag. Daily+ timeframes carry a
+  // "YYYY-MM-DD" string → "24 Jun 2026"; intraday carries a unix-seconds number
+  // → "24 Jun, 14:30".
+  const fmtDateLabel = (time) => {
+    if (time == null) return null
+    if (typeof time === 'string') {
+      const d = new Date(`${time}T00:00:00`)
+      return isNaN(d) ? time : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+    }
+    const d = new Date(time * 1000)
+    return isNaN(d) ? null : d.toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false })
+  }
+
+  const W = wrapRef.current?.clientWidth  || 2000
+  const H = wrapRef.current?.clientHeight || 500
 
   // ── Build a shape from two data points ─────────────────────────────────────
+  // Anchors persist `t` (epoch) so the shape renders on every timeframe.
   const makeTwoPoint = (t, a, b) => {
     const base = { id: uid(), color: colorRef.current }
-    const pt = (p) => ({ logical: p.logical, price: p.price, pane: p.pane ?? 0 })
+    const pt = (p) => ({ t: p.t ?? logicalToEpoch(p.logical), price: p.price, pane: p.pane ?? 0 })
     if (t === 'trendline')
       return { ...base, type: 'trendline', p1: pt(a), p2: pt(b) }
     if (t === 'long' || t === 'short')
@@ -287,26 +436,28 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
     switch (d.type) {
       case 'trendline': return { p1: toPx(d.p1), p2: toPx(d.p2) }
       case 'channel':   return { p1: toPx(d.p1), p2: toPx(d.p2), p3: toPx(d.p3) }
-      case 'hline':     return { price: { x: 0, y: priceY(d.price) } }
-      case 'vline':     return { time:  { x: d.logical != null ? logicalX(d.logical) : timeX(d.time), y: 0 } }
+      case 'hline':     return { price: { x: 0, y: priceY(d.price, d.pane) } }
+      case 'vline':     return { time:  { x: anchorToX(d), y: 0 } }
       case 'long':
       case 'short':     return { p1: toPx(d.p1), p2: toPx(d.p2) }
-      case 'text':      return { pos: toPx({ logical: d.logical, time: d.time, price: d.price }) }
+      case 'text':      return { pos: toPx(d) }
       default:          return {}
     }
   }
 
   // ── Apply a single-handle drag ─────────────────────────────────────────────
+  // Edited anchors are re-written in canonical `t` form (legacy `logical`/`time`
+  // fields are dropped, upgrading old drawings the first time they're touched).
   const applyHandle = (id, handle, data) => setDrawings(prev => prev.map(d => {
     if (d.id !== id) return d
     switch (d.type) {
       case 'trendline':
       case 'channel':
       case 'long':
-      case 'short':     return { ...d, [handle]: { logical: data.logical, price: data.price, pane: data.pane ?? d[handle]?.pane ?? 0 } }
-      case 'hline':     return { ...d, price: data.price }
-      case 'vline':     return { ...d, logical: data.logical }
-      case 'text':      return { ...d, logical: data.logical, price: data.price, pane: data.pane ?? d.pane ?? 0 }
+      case 'short':     return { ...d, [handle]: { t: data.t, price: data.price, pane: data.pane ?? d[handle]?.pane ?? 0 } }
+      case 'hline':     return { ...d, price: data.price, pane: data.pane ?? d.pane ?? 0 }
+      case 'vline':     return { ...d, t: data.t, logical: undefined, time: undefined }
+      case 'text':      return { ...d, t: data.t, logical: undefined, time: undefined, price: data.price, pane: data.pane ?? d.pane ?? 0 }
       default:          return d
     }
   }))
@@ -314,17 +465,20 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
   // ── Apply a body drag (translate every anchor by the pixel delta) ──────────
   const applyBody = (a, xy) => {
     const dx = xy.x - a.start.x, dy = xy.y - a.start.y
-    const nd = k => toData({ x: a.anchors[k].x + dx, y: a.anchors[k].y + dy })
+    const nd = k => {
+      const p = toData({ x: a.anchors[k].x + dx, y: a.anchors[k].y + dy })
+      return p ? { t: p.t, price: p.price, pane: p.pane ?? 0 } : null
+    }
     setDrawings(prev => prev.map(d => {
       if (d.id !== a.id) return d
       switch (d.type) {
         case 'trendline': { const p1 = nd('p1'), p2 = nd('p2'); return (p1 && p2) ? { ...d, p1, p2 } : d }
         case 'channel':   { const p1 = nd('p1'), p2 = nd('p2'), p3 = nd('p3'); return (p1 && p2 && p3) ? { ...d, p1, p2, p3 } : d }
-        case 'hline':     { const p = nd('price'); return p ? { ...d, price: p.price } : d }
-        case 'vline':     { const p = nd('time');  return p ? { ...d, logical: p.logical } : d }
+        case 'hline':     { const p = nd('price'); return p ? { ...d, price: p.price, pane: p.pane ?? d.pane ?? 0 } : d }
+        case 'vline':     { const p = nd('time');  return p ? { ...d, t: p.t, logical: undefined, time: undefined } : d }
         case 'long':
         case 'short':     { const p1 = nd('p1'), p2 = nd('p2'); return (p1 && p2) ? { ...d, p1, p2 } : d }
-        case 'text':      { const p = nd('pos'); return p ? { ...d, logical: p.logical, price: p.price } : d }
+        case 'text':      { const p = nd('pos'); return p ? { ...d, t: p.t, logical: undefined, time: undefined, price: p.price } : d }
         default:          return d
       }
     }))
@@ -395,14 +549,14 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
     const data = toData(xy)
     if (!data) return
 
-    if (t === 'text') { setTextPos({ ...xy, logical: data.logical, price: data.price, pane: data.pane ?? 0 }); setTextVal(''); return }
+    if (t === 'text') { setTextPos({ ...xy, t: data.t, price: data.price, pane: data.pane ?? 0 }); setTextVal(''); return }
 
     if (t === 'hline') {
-      addDrawing({ id: uid(), type: 'hline', price: data.price, color: colorRef.current })
+      addDrawing({ id: uid(), type: 'hline', price: data.price, pane: data.pane ?? 0, color: colorRef.current })
       setTool('cursor'); return
     }
     if (t === 'vline') {
-      addDrawing({ id: uid(), type: 'vline', logical: data.logical, color: colorRef.current })
+      addDrawing({ id: uid(), type: 'vline', t: data.t, color: colorRef.current })
       setTool('cursor'); return
     }
 
@@ -410,7 +564,7 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
       const next = [...clicks, { ...xy, ...data }]
       if (next.length < 3) { setClicks(next) }
       else {
-        const cp = (p) => ({ logical: p.logical, price: p.price, pane: p.pane ?? 0 })
+        const cp = (p) => ({ t: p.t, price: p.price, pane: p.pane ?? 0 })
         addDrawing({ id: uid(), type: 'channel', color: colorRef.current,
           p1: cp(next[0]), p2: cp(next[1]), p3: cp(next[2]) })
         setClicks([]); setTool('cursor')
@@ -482,6 +636,22 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
     </g>
   )
 
+  // Date/time tag pinned to the bottom (time-axis) of a vertical line — mirrors
+  // TradingView's vertical-line date indicator. Clamped to stay on-screen.
+  const DateTag = ({ x, label, color }) => {
+    if (!label || x == null) return null
+    const boxW = label.length * 6 + 14
+    const cx   = Math.max(boxW / 2, Math.min(W - boxW / 2, x))
+    const yTop = H - 21
+    return (
+      <g style={{ pointerEvents: 'none' }}>
+        <rect x={cx - boxW / 2} y={yTop} width={boxW} height={17} rx={3} fill={color} />
+        <text x={cx} y={yTop + 12.5} textAnchor="middle" fill="#fff" fontSize={10} fontWeight={600}
+          style={{ userSelect: 'none' }}>{label}</text>
+      </g>
+    )
+  }
+
   const hoverProps = id => interactive
     ? { onPointerEnter: () => setHoverId(id), onPointerLeave: () => setHoverId(null) }
     : {}
@@ -493,8 +663,10 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
 
     switch (d.type) {
       case 'hline': {
-        const y = priceY(d.price); if (y == null) return null
-        const lbl = d.price.toLocaleString('en-IN', { maximumFractionDigits: 2 })
+        const y = priceY(d.price, d.pane); if (y == null) return null
+        // Indicator-pane values (ratio ≈ 0.0098, MACD ≈ -0.04) round to "0.00"
+        // at 2dp — widen the precision for sub-1 magnitudes so the tag is real.
+        const lbl = d.price.toLocaleString('en-IN', { maximumFractionDigits: Math.abs(d.price) < 1 ? 5 : 2 })
         return (
           <g key={d.id} {...hoverProps(d.id)}>
             <line x1={0} y1={y} x2="100%" y2={y} stroke={d.color} strokeWidth={1.5} style={{ pointerEvents: 'none' }}/>
@@ -510,13 +682,17 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
       }
 
       case 'vline': {
-        const x = d.logical != null ? logicalX(d.logical) : timeX(d.time); if (x == null) return null
+        const x = anchorToX(d); if (x == null) return null
+        const label = fmtDateLabel(
+          isNum(d.t) ? timeAtLogical(epochToLogical(d.t))
+                     : d.logical != null ? timeAtLogical(d.logical) : d.time)
         return (
           <g key={d.id} {...hoverProps(d.id)}>
             <line x1={x} y1={0} x2={x} y2="100%" stroke={d.color} strokeWidth={1.5} strokeDasharray="5 4" style={{ pointerEvents: 'none' }}/>
             {interactive &&
               <line x1={x} y1={0} x2={x} y2="100%" stroke="transparent" strokeWidth={12}
                 style={{ pointerEvents: 'stroke', cursor: 'ew-resize' }} onPointerDown={e => onBodyDown(e, d.id)} />}
+            {show && <DateTag x={x} label={label} color={d.color}/>}
             {show && <Handle x={x} y={40} id={d.id} handle="time" cursor="ew-resize"/>}
             {showDel && <DelBtn x={x} y={16} id={d.id}/>}
           </g>
@@ -596,7 +772,7 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
       }
 
       case 'text': {
-        const p = toPx({ logical: d.logical, time: d.time, price: d.price }); if (!p) return null
+        const p = toPx(d); if (!p) return null
         const wpx = (d.text?.length ?? 0) * 7 + 8
         return (
           <g key={d.id} {...hoverProps(d.id)}>
@@ -658,7 +834,12 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
 
     // crosshair-style placement previews
     if (tool === 'hline') return <line x1={0} y1={y} x2="100%" y2={y} stroke={color} strokeWidth={1.5} strokeDasharray={dash} opacity={0.6}/>
-    if (tool === 'vline') return <line x1={x} y1={0} x2={x} y2="100%" stroke={color} strokeWidth={1.5} strokeDasharray={dash} opacity={0.6}/>
+    if (tool === 'vline') return (
+      <g>
+        <line x1={x} y1={0} x2={x} y2="100%" stroke={color} strokeWidth={1.5} strokeDasharray={dash} opacity={0.6}/>
+        <DateTag x={x} label={fmtDateLabel(timeAtLogical(logicalAtX(x)))} color={color}/>
+      </g>
+    )
 
     // channel click chain
     if (tool === 'channel' && clicks.length === 1)
@@ -751,7 +932,7 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
           <input autoFocus value={textVal} onChange={e => setTextVal(e.target.value)}
             onKeyDown={e => {
               if (e.key === 'Enter' && textVal.trim()) {
-                addDrawing({ id: uid(), type: 'text', color, logical: textPos.logical, price: textPos.price, pane: textPos.pane ?? 0, text: textVal.trim() })
+                addDrawing({ id: uid(), type: 'text', color, t: textPos.t, price: textPos.price, pane: textPos.pane ?? 0, text: textVal.trim() })
                 setTextPos(null); setTextVal(''); setTool('cursor')
               }
               if (e.key === 'Escape') { setTextPos(null); setTextVal('') }

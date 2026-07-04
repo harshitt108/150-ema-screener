@@ -1,0 +1,164 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+// Rating History Score — Pine port of backend/indicators.py:compute_rating_history()
+//
+// Reproduces the app's daily "Rating History" walk-forward score on TradingView.
+// ALL calculations are done on DAILY data no matter what chart timeframe you
+// are on — so the pane always shows the same score as the app's Rating History.
+//
+// Up to 13 bullish conditions are checked per day; the score is the % of
+// conditions that are bullish among those with enough history:
+//
+//   1.  Close > EMA(20)
+//   2.  Close > EMA(50)
+//   3.  Close > EMA(150)
+//   4.  EMA(20) > EMA(50)
+//   5.  RSI(14) > 50
+//   6.  MACD(12,26) line > Signal(9)
+//   7.  Momentum: Close − Close[21] > 0
+//   8.  OBV > EMA(OBV, 50)
+//   9.  A/D Line > EMA(A/D, 21)
+//   10. Aroon Oscillator(25) > 0
+//   11. Ratio (Close/Benchmark) > EMA(Ratio, 20)   ┐
+//   12. Ratio > EMA(Ratio, 50)                     ├ optional, on by default
+//   13. Ratio > EMA(Ratio, 150)                    ┘ (app uses NIFTY 50)
+//
+// Rating buckets:  ≥80 Strong Buy · ≥70 Buy · ≥40 Hold · ≥20 Sell · <20 Strong Sell
+// ─────────────────────────────────────────────────────────────────────────────
+indicator("Rating History Score [150 EMA Scanner]", shorttitle = "RATING", overlay = false, precision = 1)
+
+// ── Inputs ───────────────────────────────────────────────────────────────────
+useBench  = input.bool(true, "Include relative-strength (ratio) conditions", tooltip = "The app compares the stock against NIFTY 50 by default. Turn off to score on the 10 price/technical conditions only.")
+benchSym  = input.symbol("NSE:NIFTY", "Benchmark for ratio")
+showTable = input.bool(true, "Show conditions table")
+showDots  = input.bool(true, "Show daily rating dots")
+showMoves = input.bool(false, "Mark big one-day score moves (triangles)")
+moveThr   = input.float(20.0, "Big-move alert threshold (points, day vs previous day)", minval = 5, step = 5)
+
+// ── Daily technical values (computed on the DAILY timeframe of the chart
+//    symbol, so any chart TF shows the exact same rating as the app) ─────────
+f_tech() =>
+    e20  = ta.ema(close, 20)
+    e50  = ta.ema(close, 50)
+    e150 = ta.ema(close, 150)
+    rsiV = ta.rsi(close, 14)
+    [macdLine, signalLine, _hist] = ta.macd(close, 12, 26, 9)
+    mom21 = close - close[21]
+    obvS   = ta.cum(nz(math.sign(ta.change(close))) * nz(volume))
+    obvE50 = ta.ema(obvS, 50)
+    hlRange = high - low
+    clv     = hlRange == 0.0 ? 0.0 : ((close - low) - (high - close)) / hlRange
+    adS     = ta.cum(clv * nz(volume))
+    adE21   = ta.ema(adS, 21)
+    aroonLen = 25
+    aroonUp  = 100.0 * (ta.highestbars(high, aroonLen + 1) + aroonLen) / aroonLen
+    aroonDn  = 100.0 * (ta.lowestbars(low, aroonLen + 1) + aroonLen) / aroonLen
+    [close, e20, e50, e150, rsiV, macdLine, signalLine, mom21, obvS, obvE50, adS, adE21, aroonUp - aroonDn]
+
+[dC, dE20, dE50, dE150, dRSI, dMACD, dSIG, dMOM, dOBV, dOBVE, dAD, dADE, dAROON] = request.security(syminfo.tickerid, "D", f_tech(), barmerge.gaps_off, barmerge.lookahead_off)
+
+// ── Daily ratio vs benchmark, via a spread symbol (STOCK/BENCH), which only
+//    has bars where both trade — same as the backend's inner join by date ────
+f_ratio() =>
+    [close, ta.ema(close, 20), ta.ema(close, 50), ta.ema(close, 150)]
+
+spreadSym = syminfo.tickerid + "/" + benchSym
+[dR, dRE20, dRE50, dRE150] = request.security(spreadSym, "D", f_ratio(), barmerge.gaps_off, barmerge.lookahead_off, ignore_invalid_symbol = true)
+
+// ── Conditions: (valid?, bullish?) — invalid ones shrink the total, exactly
+//    like the backend skips indicators without enough history ────────────────
+v01 = not na(dE20),                    c01 = dC > dE20
+v02 = not na(dE50),                    c02 = dC > dE50
+v03 = not na(dE150),                   c03 = dC > dE150
+v04 = not na(dE20) and not na(dE50),   c04 = dE20 > dE50
+v05 = not na(dRSI),                    c05 = dRSI > 50
+v06 = not na(dMACD) and not na(dSIG),  c06 = dMACD > dSIG
+v07 = not na(dMOM),                    c07 = dMOM > 0
+v08 = not na(dOBVE),                   c08 = dOBV > dOBVE
+v09 = not na(dADE),                    c09 = dAD > dADE
+v10 = not na(dAROON),                  c10 = dAROON > 0
+v11 = useBench and not na(dRE20),      c11 = dR > dRE20
+v12 = useBench and not na(dRE50),      c12 = dR > dRE50
+v13 = useBench and not na(dRE150),     c13 = dR > dRE150
+
+total = (v01 ? 1 : 0) + (v02 ? 1 : 0) + (v03 ? 1 : 0) + (v04 ? 1 : 0) + (v05 ? 1 : 0) + (v06 ? 1 : 0) + (v07 ? 1 : 0) + (v08 ? 1 : 0) + (v09 ? 1 : 0) + (v10 ? 1 : 0) + (v11 ? 1 : 0) + (v12 ? 1 : 0) + (v13 ? 1 : 0)
+
+bull = (v01 and c01 ? 1 : 0) + (v02 and c02 ? 1 : 0) + (v03 and c03 ? 1 : 0) + (v04 and c04 ? 1 : 0) + (v05 and c05 ? 1 : 0) + (v06 and c06 ? 1 : 0) + (v07 and c07 ? 1 : 0) + (v08 and c08 ? 1 : 0) + (v09 and c09 ? 1 : 0) + (v10 and c10 ? 1 : 0) + (v11 and c11 ? 1 : 0) + (v12 and c12 ? 1 : 0) + (v13 and c13 ? 1 : 0)
+
+score = total > 0 ? 100.0 * bull / total : 0.0
+
+// Day-over-day change (the app's CHANGE column) — works on any chart TF
+var float prevDayScore = na
+var float runDayScore  = na
+if timeframe.change("D")
+    prevDayScore := runDayScore
+runDayScore := score
+change = score - nz(prevDayScore, score)
+
+// ── Rating bucket (same thresholds as the app) ───────────────────────────────
+ratingTxt = score >= 80 ? "Strong Buy" : score >= 70 ? "Buy" : score >= 40 ? "Hold" : score >= 20 ? "Sell" : "Strong Sell"
+ratingCol = score >= 80 ? #4ade80 : score >= 70 ? #86efac : score >= 40 ? #facc15 : score >= 20 ? #fb923c : #f87171
+
+// Dot colors match the app's trend chart: green ≥70, amber 40–70, red <40
+dotCol = score >= 70 ? #4ade80 : score >= 40 ? #fbbf24 : #f87171
+
+// ── Plot: green line + soft area fill + colored daily dots (like the app) ───
+pScore = plot(score, "Score", color = #4ade80, linewidth = 2)
+pFloor = plot(0.0,   "",      color = color.new(color.white, 100), editable = false, display = display.pane)
+fill(pScore, pFloor, color = color.new(#22c55e, 88))
+plot(showDots ? score : na, "Rating dots", color = dotCol, style = plot.style_circles, linewidth = 3)
+plot(100.0, "", color = color.new(color.white, 100), editable = false, display = display.pane)
+
+hline(80, "Strong Buy ≥ 80", color = color.new(#4ade80, 75), linestyle = hline.style_dotted)
+hline(70, "Buy ≥ 70",        color = color.new(#86efac, 80), linestyle = hline.style_dotted)
+hline(40, "Hold ≥ 40",       color = color.new(#facc15, 80), linestyle = hline.style_dotted)
+hline(20, "Sell ≥ 20",       color = color.new(#fb923c, 80), linestyle = hline.style_dotted)
+
+// ── Conditions table (verify each chip against the app) ─────────────────────
+fmtPct(v, ref) =>
+    ref == 0 or na(ref) ? "—" : str.tostring((v - ref) / ref * 100, "+0.00") + "%"
+
+var table t = table.new(position.top_right, 3, 17, border_width = 1, border_color = color.new(#000000, 80))
+
+cell(int row, string name, bool valid, bool isBull, string val) =>
+    table.cell(t, 0, row, name, text_color = #d1d5db, text_size = size.small, text_halign = text.align_left, bgcolor = #111827)
+    table.cell(t, 1, row, valid ? val : "n/a", text_color = #9ca3af, text_size = size.small, bgcolor = #111827)
+    table.cell(t, 2, row, valid ? (isBull ? "✓" : "✗") : "—", text_color = valid ? (isBull ? #4ade80 : #f87171) : #6b7280, text_size = size.small, bgcolor = #111827)
+
+if showTable and barstate.islast
+    table.cell(t, 0, 0, "RATING HISTORY · Daily", text_color = #e5e7eb, text_size = size.normal, text_halign = text.align_left, bgcolor = #0b0f1a)
+    table.cell(t, 1, 0, ratingTxt + "  " + str.tostring(score, "0"), text_color = ratingCol, text_size = size.normal, bgcolor = #0b0f1a)
+    table.cell(t, 2, 0, "Δ " + str.tostring(change, "+0.#"), text_color = change > 0 ? #4ade80 : change < 0 ? #f87171 : #9ca3af, text_size = size.normal, bgcolor = #0b0f1a)
+
+    cell(1,  "Price vs 20 EMA",    v01, c01, fmtPct(dC, dE20))
+    cell(2,  "Price vs 50 EMA",    v02, c02, fmtPct(dC, dE50))
+    cell(3,  "Price vs 150 EMA",   v03, c03, fmtPct(dC, dE150))
+    cell(4,  "20 EMA vs 50 EMA",   v04, c04, c04 ? "Bullish" : "Bearish")
+    cell(5,  "RSI(14) > 50",       v05, c05, str.tostring(dRSI, "0.0"))
+    cell(6,  "MACD vs Signal",     v06, c06, c06 ? "Bullish" : "Bearish")
+    cell(7,  "Momentum(21) > 0",   v07, c07, str.tostring(dMOM, "+0.00"))
+    cell(8,  "OBV vs 50 EMA",      v08, c08, c08 ? "Yes" : "No")
+    cell(9,  "A/D vs 21 EMA",      v09, c09, c09 ? "Yes" : "No")
+    cell(10, "Aroon Osc(25) > 0",  v10, c10, str.tostring(dAROON, "+0"))
+    cell(11, "Ratio vs 20 EMA",    v11, c11, fmtPct(dR, dRE20))
+    cell(12, "Ratio vs 50 EMA",    v12, c12, fmtPct(dR, dRE50))
+    cell(13, "Ratio vs 150 EMA",   v13, c13, fmtPct(dR, dRE150))
+
+    table.cell(t, 0, 14, "Bullish conditions", text_color = #d1d5db, text_size = size.small, text_halign = text.align_left, bgcolor = #0b0f1a)
+    table.cell(t, 1, 14, str.tostring(bull) + " / " + str.tostring(total), text_color = #e5e7eb, text_size = size.small, bgcolor = #0b0f1a)
+    table.cell(t, 2, 14, "", bgcolor = #0b0f1a)
+
+// ── Alerts ───────────────────────────────────────────────────────────────────
+alertcondition(ratingTxt != ratingTxt[1], "Rating changed",     "Rating bucket changed on {{ticker}} (Daily rating score)")
+alertcondition(ta.crossover(score, 80),   "Entered Strong Buy", "{{ticker}} score crossed above 80 — Strong Buy")
+alertcondition(ta.crossunder(score, 40),  "Dropped below Hold", "{{ticker}} score dropped below 40 — Sell zone")
+
+// Big one-day move in the score (default ±20 pts, e.g. 50 → 30 or 50 → 70)
+bigJump = change >= moveThr
+bigDrop = change <= -moveThr
+alertcondition(bigJump,            "Score jumped ≥ threshold", "{{ticker}} daily rating score jumped by the alert threshold or more in one day")
+alertcondition(bigDrop,            "Score fell ≥ threshold",   "{{ticker}} daily rating score fell by the alert threshold or more in one day")
+alertcondition(bigJump or bigDrop, "Score moved ≥ threshold",  "{{ticker}} daily rating score moved by the alert threshold or more in one day (either direction)")
+
+plotshape(showMoves and bigJump ? score : na, "Big jump", style = shape.triangleup,   location = location.absolute, color = #4ade80, size = size.tiny)
+plotshape(showMoves and bigDrop ? score : na, "Big drop", style = shape.triangledown, location = location.absolute, color = #f87171, size = size.tiny)

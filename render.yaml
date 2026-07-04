@@ -1,0 +1,17 @@
+# Render.com blueprint — deploys the whole app (API + frontend) as one
+# Docker web service. Connect the repo on render.com and it picks this up.
+services:
+  - type: web
+    name: nse-toolkit
+    runtime: docker
+    plan: free            # free tier sleeps after 15 min idle; first hit wakes it
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: DB_PATH
+        value: /app/backend/data/portfolios.db
+    disk:                  # persists the SQLite DB (portfolios) across deploys
+      name: data
+      mountPath: /app/backend/data
+      sizeGB: 1

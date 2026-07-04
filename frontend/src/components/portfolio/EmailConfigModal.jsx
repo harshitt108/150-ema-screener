@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { X, Mail, Eye, EyeOff, CheckCircle, AlertCircle, Send } from 'lucide-react'
 
-const API_BASE = 'http://localhost:8000'
+import { API_BASE } from '../../apiBase'
 
 export default function EmailConfigModal({ onClose }) {
   const [form, setForm] = useState({

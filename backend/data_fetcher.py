@@ -1,7 +1,12 @@
 import requests
 import pandas as pd
 import time
+import logging
 from typing import Optional
+
+from data_health import inspect_ohlcv
+
+logger = logging.getLogger(__name__)
 
 SESSION = requests.Session()
 SESSION.headers.update({
@@ -96,8 +101,42 @@ def fetch_ohlcv(symbol: str, interval: str, period: str,
             df["Close"] = df["AdjClose"]
             df = df.drop(columns=["AdjClose"])
 
+        # ── Backfill the current/forming bar's live price ─────────────────────
+        # Yahoo often leaves the most-recent bar's `close` NULL while the session
+        # is live/just-closed, even though the real price sits in
+        # meta.regularMarketPrice. Without this, dropna() below would DROP that
+        # bar and the chart would show a STALE last candle — e.g. after KPITTECH
+        # crashed 671→557 intraday, the chart still read 671. Inject the live
+        # price so the forming candle is present and correct on every timeframe.
+        meta = result.get("meta", {})
+        rmp  = meta.get("regularMarketPrice")
+        if rmp and len(df) and pd.isna(df["Close"].iloc[-1]):
+            i = df.index[-1]
+            if pd.isna(df.at[i, "Open"]):
+                df.at[i, "Open"] = rmp
+            df.at[i, "Close"] = rmp
+            hi = df.at[i, "High"]; lo = df.at[i, "Low"]; op = df.at[i, "Open"]
+            df.at[i, "High"] = max([v for v in (hi, op, rmp) if pd.notna(v)])
+            df.at[i, "Low"]  = min([v for v in (lo, op, rmp) if pd.notna(v)])
+
         df = df.dropna(subset=["Close"])
         df = df[df["Close"] > 0]
+
+        # Drop non-trading padding bars: Yahoo emits a flat, zero-volume bar for
+        # some holidays (Open==High==Low==Close, volume 0). It renders as a
+        # meaningless doji and skews EMAs. Real index bars (volume 0 too) always
+        # have a High/Low range, so gating on High==Low leaves them untouched.
+        df = df[~((df["Volume"] == 0) & (df["High"] == df["Low"]))]
+
+        # ── Tripwire: validate what we're about to serve ──────────────────────
+        # If a NEW kind of Yahoo glitch slips past the repairs above, log it
+        # loudly rather than let a chart/scan silently render wrong data.
+        problems = inspect_ohlcv(df, symbol, yf_interval)
+        if problems:
+            logger.warning(
+                "[data-health] %s %s served with issues: %s",
+                symbol, yf_interval, ",".join(problems),
+            )
         return df
 
     except Exception:

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { X, Star, Trash2, Edit2, Plus, TrendingUp, Loader } from 'lucide-react'
 import ResultsTable from './ResultsTable'
 
-const API_BASE = 'http://localhost:8000'
+import { API_BASE } from '../apiBase'
 
 const TIMEFRAMES = [
   { value: '5min', label: '5m' }, { value: '15min', label: '15m' }, { value: '30min', label: '30m' },

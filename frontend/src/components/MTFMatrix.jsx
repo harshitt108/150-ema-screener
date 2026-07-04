@@ -20,15 +20,22 @@ const ALL_TIMEFRAMES = [
   { key: 'monthly', label: 'M'   },
 ]
 
+// Chip-style % distance (matches the EMA / Ratio-vs-EMA chips elsewhere).
+const pct = v => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
+
+// Labels are kept compact (with the distinguishing 20/50/150 always visible in
+// the narrow first column); the full name shows on hover via `full`.
 const ROWS = [
-  { key: 'rsi',        label: 'RSI(14)',       render: r => r?.value != null ? r.value.toFixed(1) : '—' },
-  { key: 'macd',       label: 'MACD(12,26)',   render: r => r?.status ?? '—' },
-  { key: 'ema20',      label: 'EMA 20',        render: r => r?.value != null ? r.value.toFixed(2) : '—' },
-  { key: 'ema50',      label: 'EMA 50',        render: r => r?.value != null ? r.value.toFixed(2) : '—' },
-  { key: 'ema150',     label: 'EMA 150',       render: r => r?.value != null ? r.value.toFixed(2) : '—' },
-  { key: 'emaCross',   label: 'X: EMA20/50',   render: r => r ? (r.above ? 'Above' : 'Below') : '—' },
-  { key: 'ratioEma20', label: 'Ratio/EMA(20)', render: r => r?.value != null ? r.value.toFixed(4) : '—' },
-  { key: 'aroon',      label: 'Aroon(25)',     render: r => r?.value != null ? r.value.toFixed(0) : '—' },
+  { key: 'rsi',         label: 'RSI',     full: 'RSI(14)',          render: r => r?.value != null ? r.value.toFixed(1) : '—' },
+  { key: 'macd',        label: 'MACD',    full: 'MACD(12,26)',      render: r => r?.status ?? '—' },
+  { key: 'ema20',       label: 'Px 20',   full: 'Price vs EMA 20',  render: r => r?.dist != null ? pct(r.dist) : '—' },
+  { key: 'ema50',       label: 'Px 50',   full: 'Price vs EMA 50',  render: r => r?.dist != null ? pct(r.dist) : '—' },
+  { key: 'ema150',      label: 'Px 150',  full: 'Price vs EMA 150', render: r => r?.dist != null ? pct(r.dist) : '—' },
+  { key: 'emaCross',    label: '20>50',   full: 'EMA 20 vs EMA 50', render: r => r ? (r.above ? 'Above' : 'Below') : '—' },
+  { key: 'ratioEma20',  label: 'RS 20',   full: 'Ratio vs EMA 20',  render: r => r?.dist != null ? pct(r.dist) : '—' },
+  { key: 'ratioEma50',  label: 'RS 50',   full: 'Ratio vs EMA 50',  render: r => r?.dist != null ? pct(r.dist) : '—' },
+  { key: 'ratioEma150', label: 'RS 150',  full: 'Ratio vs EMA 150', render: r => r?.dist != null ? pct(r.dist) : '—' },
+  { key: 'aroon',       label: 'Aroon',   full: 'Aroon(25)',        render: r => r?.value != null ? r.value.toFixed(0) : '—' },
 ]
 
 function Cell({ row }) {
@@ -111,7 +118,7 @@ export default function MTFMatrix({ matrix }) {
           matter how many timeframes are toggled on above */}
       <table className="w-full border-collapse table-fixed">
         <colgroup>
-          <col className="w-14" />
+          <col className="w-[68px]" />
           {columns.map(c => <col key={c.timeframe} />)}
           <col className="w-12" />
         </colgroup>
@@ -127,11 +134,11 @@ export default function MTFMatrix({ matrix }) {
           </tr>
         </thead>
         <tbody>
-          {ROWS.map(({ key, label, render }) => {
+          {ROWS.map(({ key, label, full, render }) => {
             let bullAcross = 0, availAcross = 0
             return (
               <tr key={key} className="border-b border-[#1e1e30]/60">
-                <td className="px-1 py-1.5 text-[10px] text-slate-400 truncate" title={label}>{label}</td>
+                <td className="px-1 py-1.5 text-[10px] font-medium text-slate-400 whitespace-nowrap" title={full || label}>{label}</td>
                 {columns.map(c => {
                   const row = c.available ? c[key] : null
                   if (row) { availAcross++; if (row.bull) bullAcross++ }

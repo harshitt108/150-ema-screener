@@ -1,7 +1,8 @@
-import { useState } from 'react'
-import { ArrowUpDown, ArrowUp, ArrowDown, ExternalLink, TrendingUp } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { ExternalLink, TrendingUp, X } from 'lucide-react'
 import { EmaGroup, MomentumGroup } from './IndicatorGroups'
 import AddToWatchlist from './AddToWatchlist'
+import { SortHeader, FilterHeader } from './TableControls'
 
 function SignalPill({ signals }) {
   if (!signals) return null
@@ -66,33 +67,18 @@ function VolumeBadge({ ratio }) {
   return <span className={`text-sm font-medium ${color}`}>{ratio.toFixed(1)}x</span>
 }
 
-function SortHeader({ label, field, sort, onSort }) {
-  const active = sort.field === field
-  return (
-    <th
-      className="px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider cursor-pointer
-        hover:text-slate-300 transition-colors whitespace-nowrap select-none"
-      onClick={() => onSort(field)}
-    >
-      <div className="flex items-center gap-1">
-        {label}
-        {active
-          ? sort.dir === 'asc'
-            ? <ArrowUp size={12} className="text-violet-400" />
-            : <ArrowDown size={12} className="text-violet-400" />
-          : <ArrowUpDown size={12} className="text-slate-700" />
-        }
-      </div>
-    </th>
-  )
-}
-
 function openTradingView(symbol) {
   window.open(`https://www.tradingview.com/chart/?symbol=NSE:${symbol}`, '_blank')
 }
 
+const NO_FILTERS = { rsSignal: 'All', rsTrend: 'All', priceSignal: 'All', rec: 'All' }
+
 export default function RSResultsTable({ results, scanned, hasPriceFilter, priceEmaPeriod, ratioEmaPeriod, onRowClick, watchlist }) {
   const [sort, setSort] = useState({ field: 'ratioDistance_abs', dir: 'asc' })
+  const [filters, setFilters] = useState(NO_FILTERS)
+
+  // Fresh scan → clear any column filters left over from the previous results
+  useEffect(() => { setFilters(NO_FILTERS) }, [results])
 
   const onSort = (field) => {
     setSort(prev => ({
@@ -101,7 +87,26 @@ export default function RSResultsTable({ results, scanned, hasPriceFilter, price
     }))
   }
 
-  const sorted = [...results].sort((a, b) => {
+  const setFilter = (key) => (v) => setFilters(f => ({ ...f, [key]: v }))
+  const anyFilter = Object.values(filters).some(v => v !== 'All')
+
+  // Dropdown options from the FULL result set (stable while narrowing down)
+  const distinct = (fn) => [...new Set(results.map(fn).filter(Boolean))].sort()
+  const opts = {
+    rsSignal:    distinct(r => r.rsSignal),
+    rsTrend:     distinct(r => r.rsTrend),
+    priceSignal: distinct(r => r.priceSignal),
+    rec:         distinct(r => r.signals?.signal),
+  }
+
+  const filtered = results.filter(r =>
+    (filters.rsSignal === 'All'    || r.rsSignal === filters.rsSignal) &&
+    (filters.rsTrend === 'All'     || r.rsTrend === filters.rsTrend) &&
+    (filters.priceSignal === 'All' || r.priceSignal === filters.priceSignal) &&
+    (filters.rec === 'All'         || r.signals?.signal === filters.rec)
+  )
+
+  const sorted = [...filtered].sort((a, b) => {
     let va, vb
     switch (sort.field) {
       case 'symbol':             va = a.symbol; vb = b.symbol; break
@@ -135,10 +140,22 @@ export default function RSResultsTable({ results, scanned, hasPriceFilter, price
     <div className="space-y-3">
       {/* Stats bar */}
       <div className="flex items-center justify-between px-1 flex-wrap gap-2">
-        <span className="text-sm text-slate-500">
-          Showing <span className="text-slate-300 font-semibold">{results.length}</span>
-          {scanned ? <> of <span className="text-slate-400">{scanned}</span> scanned</> : ''} stocks
-          <span className="ml-2 text-slate-600 text-xs">· click a row to open chart</span>
+        <span className="text-sm text-slate-500 flex items-center gap-2 flex-wrap">
+          <span>
+            Showing <span className="text-slate-300 font-semibold">{sorted.length}</span>
+            {anyFilter && <> of <span className="text-slate-400">{results.length}</span> matched</>}
+            {scanned ? <> · <span className="text-slate-400">{scanned}</span> scanned</> : ''}
+            <span className="ml-2 text-slate-600 text-xs">· click a row to open chart</span>
+          </span>
+          {anyFilter && (
+            <button
+              onClick={() => setFilters(NO_FILTERS)}
+              className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/30
+                text-violet-400 hover:bg-violet-500/20 text-xs font-medium transition-colors"
+            >
+              <X size={11} /> Clear filters
+            </button>
+          )}
         </span>
         <div className="flex gap-3 flex-wrap">
           {['BUY','HOLD','SELL'].map(s => {
@@ -162,13 +179,13 @@ export default function RSResultsTable({ results, scanned, hasPriceFilter, price
               <SortHeader label="Symbol"     field="symbol"            sort={sort} onSort={onSort} />
               <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Benchmark</th>
               <SortHeader label="LTP"        field="ltp"               sort={sort} onSort={onSort} />
-              <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">RS Signal</th>
+              <FilterHeader label="RS Signal" options={opts.rsSignal} value={filters.rsSignal} onChange={setFilter('rsSignal')} />
               <SortHeader label="Ratio Dist" field="ratioDistance_abs"  sort={sort} onSort={onSort} />
-              <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">RS Trend</th>
+              <FilterHeader label="RS Trend" options={opts.rsTrend} value={filters.rsTrend} onChange={setFilter('rsTrend')} />
               {hasPriceFilter && (
-                <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Price Signal</th>
+                <FilterHeader label="Price Signal" options={opts.priceSignal} value={filters.priceSignal} onChange={setFilter('priceSignal')} />
               )}
-              <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Rec.</th>
+              <FilterHeader label="Rec." options={opts.rec} value={filters.rec} onChange={setFilter('rec')} />
               <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap">EMA (20/50/150)</th>
               <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap">Ratio vs EMA</th>
               <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap">Momentum</th>
@@ -177,6 +194,13 @@ export default function RSResultsTable({ results, scanned, hasPriceFilter, price
             </tr>
           </thead>
           <tbody>
+            {sorted.length === 0 && (
+              <tr>
+                <td colSpan={13} className="px-3 py-12 text-center text-sm text-slate-500">
+                  No rows match the column filters — <button onClick={() => setFilters(NO_FILTERS)} className="text-violet-400 hover:underline">clear filters</button>
+                </td>
+              </tr>
+            )}
             {sorted.map((row, i) => (
               <tr
                 key={row.symbol}

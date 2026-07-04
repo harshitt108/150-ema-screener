@@ -3,7 +3,10 @@ from sqlalchemy.orm import DeclarativeBase, relationship, sessionmaker
 from datetime import datetime, timezone
 import os
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "portfolios.db")
+# Overridable so hosted deploys can point the DB at a persistent volume
+# (e.g. DB_PATH=/app/backend/data/portfolios.db with a disk mounted there).
+DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "portfolios.db"))
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine)
 

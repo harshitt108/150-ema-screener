@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react'
 import { X, Upload, ClipboardList, FileText, CheckCircle, AlertTriangle } from 'lucide-react'
 
-const API_BASE = 'http://localhost:8000'
+import { API_BASE } from '../../apiBase'
 
 const PASTE_PLACEHOLDER = `TCS,25,3650,2024-01-15
 RELIANCE,40,2810

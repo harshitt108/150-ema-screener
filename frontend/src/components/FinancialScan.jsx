@@ -9,7 +9,7 @@
 // scroll into.
 import { useState, useEffect } from 'react'
 
-const API_BASE = 'http://localhost:8000'
+import { API_BASE } from '../apiBase'
 
 const MONTHS = { '01': 'Jan', '02': 'Feb', '03': 'Mar', '04': 'Apr', '05': 'May', '06': 'Jun',
                  '07': 'Jul', '08': 'Aug', '09': 'Sep', '10': 'Oct', '11': 'Nov', '12': 'Dec' }

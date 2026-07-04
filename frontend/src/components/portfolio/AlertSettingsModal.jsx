@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { X, Bell, CheckCircle } from 'lucide-react'
 
-const API_BASE = 'http://localhost:8000'
+import { API_BASE } from '../../apiBase'
 
 const ALERT_OPTIONS = [
   { key: 'alertCrossBelow150', label: 'Cross below 150 EMA', desc: 'Primary long-term trend signal', recommended: true },

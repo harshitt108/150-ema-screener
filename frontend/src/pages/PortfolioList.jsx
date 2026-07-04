@@ -3,7 +3,7 @@ import { Plus, Briefcase, TrendingUp, Zap, Settings2, Trash2, ChevronRight, BarC
 import CreatePortfolioModal from '../components/portfolio/CreatePortfolioModal'
 import { HealthScoreChip } from '../components/portfolio/HealthScoreBadge'
 
-const API_BASE = 'http://localhost:8000'
+import { API_BASE } from '../apiBase'
 
 const TYPE_META = {
   investment: { label: 'Investment',    color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/25', icon: TrendingUp },

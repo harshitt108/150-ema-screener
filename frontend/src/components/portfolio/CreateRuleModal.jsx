@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { X, Users, TrendingDown, TrendingUp, Activity, ChevronRight, Plus, Sparkles } from 'lucide-react'
 
-const API_BASE = 'http://localhost:8000'
+import { API_BASE } from '../../apiBase'
 
 const TIMEFRAMES = [
   { value: '5min',    label: '5 Minutes' },

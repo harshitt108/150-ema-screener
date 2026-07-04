@@ -234,26 +234,18 @@ def compute_mtf_snapshot(df: pd.DataFrame, ratio: Optional[pd.Series] = None) ->
     e50  = last(calculate_ema(close, 50))
     e150 = last(calculate_ema(close, 150))
 
-    if e20 is not None and ltp is not None:
-        b = ltp > e20
-        rows["ema20"] = {"value": round(e20, 2), "bull": b}
+    # Price vs EMA — carries `dist` (% price is above/below the EMA) so the matrix
+    # shows the same chip-style percentage as the EMA columns/chips elsewhere.
+    def price_ema_row(ema_v):
+        if ema_v is None or ltp is None or ema_v == 0:
+            return None
+        b = ltp > ema_v
         count(b)
-    else:
-        rows["ema20"] = None
+        return {"value": round(ema_v, 2), "dist": round((ltp - ema_v) / ema_v * 100, 2), "bull": b}
 
-    if e50 is not None and ltp is not None:
-        b = ltp > e50
-        rows["ema50"] = {"value": round(e50, 2), "bull": b}
-        count(b)
-    else:
-        rows["ema50"] = None
-
-    if e150 is not None and ltp is not None:
-        b = ltp > e150
-        rows["ema150"] = {"value": round(e150, 2), "bull": b}
-        count(b)
-    else:
-        rows["ema150"] = None
+    rows["ema20"]  = price_ema_row(e20)
+    rows["ema50"]  = price_ema_row(e50)
+    rows["ema150"] = price_ema_row(e150)
 
     if e20 is not None and e50 is not None:
         b = e20 > e50
@@ -262,14 +254,24 @@ def compute_mtf_snapshot(df: pd.DataFrame, ratio: Optional[pd.Series] = None) ->
     else:
         rows["emaCross"] = None
 
-    rows["ratioEma20"] = None
-    if ratio is not None and len(ratio) >= 20:
+    # Ratio (instrument / benchmark) vs its own 20/50/150 EMA — same relative-
+    # strength panel as the "Ratio vs EMA" chips, now across every timeframe.
+    # `dist` = % the ratio is above/below that EMA (green above / red below).
+    def ratio_ema_row(period):
+        if ratio is None or len(ratio) < period:
+            return None
         r_cur = last(ratio)
-        r_e20 = last(calculate_ema(ratio, 20))
-        if r_cur is not None and r_e20 is not None:
-            b = r_cur > r_e20
-            rows["ratioEma20"] = {"value": round(r_cur, 4), "ema": round(r_e20, 4), "bull": b}
-            count(b)
+        r_e = last(calculate_ema(ratio, period))
+        if r_cur is None or r_e is None or r_e == 0:
+            return None
+        b = r_cur > r_e
+        count(b)
+        return {"value": round(r_cur, 4), "ema": round(r_e, 4),
+                "dist": round((r_cur - r_e) / r_e * 100, 2), "bull": b}
+
+    rows["ratioEma20"]  = ratio_ema_row(20)
+    rows["ratioEma50"]  = ratio_ema_row(50)
+    rows["ratioEma150"] = ratio_ema_row(150)
 
     au, adn = aroon(high, low, 25)
     au_v, adn_v = last(au), last(adn)
