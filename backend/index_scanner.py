@@ -7,6 +7,12 @@ All Yahoo tickers below were verified to return >=250 daily bars (deep enough fo
 a settled 200 EMA). Symbols are NOT guessed — the ones that silently return no
 data on Yahoo (e.g. ^CNXMIDCAP, ^CNXSC, smallcap indices) are deliberately
 excluded rather than shipped as dead rows. See scanner-data-validation memory.
+
+The ~18 indices in nse_index_data.NSE_INDEX_NAME are sourced from NSE's own
+archive instead — Yahoo stopped returning historical data for them (confirmed
+Jul 2026; they still show a Yahoo symbol below for resolve_yahoo_symbol's
+sake, but analyze_index() and fetch_chart_ohlcv() route them to NSE, not
+Yahoo). Every other index is untouched.
 """
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -18,6 +24,7 @@ from data_fetcher import fetch_ohlcv
 from scanner import calculate_ema, ema_status, ema_panel, TIMEFRAME_MAP, NO_DATA
 from indicators import compute_signals, rsi as calc_rsi
 from rs_scanner import _compute_ratio, _rs_trend
+from nse_index_data import get_index_ohlcv, NSE_INDEX_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +90,18 @@ _NAME_TO_YAHOO = {name: sym for name, (sym, _cat) in INDEX_UNIVERSE.items()}
 _YAHOO_SET = set(_NAME_TO_YAHOO.values())
 
 
+def fetch_chart_ohlcv(symbol: str, interval: str, period: str) -> Optional[pd.DataFrame]:
+    """Drop-in for fetch_ohlcv(resolve_yahoo_symbol(symbol), interval, period) —
+    used by main.py's per-symbol chart/detail endpoints (chart, signals,
+    mtf-matrix, signal-history, rating-history, compare-snapshot). Routes the
+    ~18 NSE-sourced indices to their archive data so opening "NIFTY Auto"'s own
+    chart works the same as the dashboard row; every other index and all
+    stocks fetch from Yahoo exactly as before."""
+    if symbol in NSE_INDEX_NAME:
+        return get_index_ohlcv(symbol, interval)
+    return fetch_ohlcv(resolve_yahoo_symbol(symbol), interval, period)
+
+
 def resolve_yahoo_symbol(symbol: str) -> str:
     """Map a UI symbol to its Yahoo ticker for the chart/detail endpoints.
 
@@ -145,7 +164,10 @@ def _relative_strength(df: pd.DataFrame, bench_df: Optional[pd.DataFrame],
 def analyze_index(name: str, yahoo_symbol: str, category: str,
                   interval: str, period: str, timeframe: str,
                   bench_df: Optional[pd.DataFrame] = None) -> Optional[dict]:
-    df = fetch_ohlcv(yahoo_symbol, interval, period)
+    # A handful of sector/thematic indices are dead on Yahoo (see module
+    # docstring) — those route to NSE's own archive instead; everything else
+    # is unchanged.
+    df = get_index_ohlcv(name, interval) if name in NSE_INDEX_NAME else fetch_ohlcv(yahoo_symbol, interval, period)
     # Need enough history for a meaningful 150 EMA; 200 EMA is best-effort.
     if df is None or len(df) < 155:
         return NO_DATA

@@ -14,7 +14,7 @@ import PortfolioList from './pages/PortfolioList'
 import PortfolioDetail from './pages/PortfolioDetail'
 import EmailConfigModal from './components/portfolio/EmailConfigModal'
 import Toaster from './components/Toast'
-import { Activity, TrendingUp, PanelLeftClose, PanelLeftOpen, SlidersHorizontal, Star, Briefcase, Mail, Search, Layers, Gauge, Rocket } from 'lucide-react'
+import { Activity, TrendingUp, PanelLeftClose, PanelLeftOpen, SlidersHorizontal, Star, Briefcase, Mail, Search, Layers, Rocket } from 'lucide-react'
 import './index.css'
 
 const DEFAULT_PRICE_FILTERS = {
@@ -40,6 +40,15 @@ const DEFAULT_RS_FILTERS = {
   priceEmaPeriod: 150,
   priceDistancePct: 3,
 }
+
+// EMA Scanner's three modes — Price EMA / Rel. Strength drive the sidebar
+// filter flow below; Rating Screener is a self-contained module with its own
+// controls, so it renders full-width instead of alongside the sidebar.
+const SCAN_MODE_TABS = [
+  { key: 'price',  label: 'Price EMA' },
+  { key: 'rs',     label: 'Rel. Strength' },
+  { key: 'rating', label: 'Rating Screener' },
+]
 
 import { API_BASE } from './apiBase'
 
@@ -203,17 +212,6 @@ export default function App() {
               Index Scanner
             </button>
             <button
-              onClick={() => setTopNav('rating')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all
-                ${topNav === 'rating'
-                  ? 'bg-violet-600 text-white shadow'
-                  : 'text-slate-400 hover:text-slate-200'
-                }`}
-            >
-              <Gauge size={13} />
-              Rating Screener
-            </button>
-            <button
               onClick={() => setTopNav('breakout')}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all
                 ${topNav === 'breakout'
@@ -239,7 +237,7 @@ export default function App() {
 
           {/* Right side actions */}
           <div className="flex items-center gap-3 flex-shrink-0">
-            {(topNav === 'scanner' || topNav === 'rating' || topNav === 'breakout') && (
+            {(topNav === 'scanner' || topNav === 'breakout') && (
               <button
                 onClick={() => setWatchlistOpen(true)}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors
@@ -303,112 +301,135 @@ export default function App() {
       {/* Index Scanner module */}
       {topNav === 'indices' && <IndexScanner />}
 
-      {/* Rating Screener module */}
-      {topNav === 'rating' && <RatingScreener watchlist={watchlist} />}
-
       {/* Breakout Screener module */}
       {topNav === 'breakout' && <BreakoutScreener watchlist={watchlist} />}
 
-      {/* Scanner main layout */}
-      {topNav === 'scanner' && <div className="max-w-7xl mx-auto px-4 py-6">
-        <div className="flex gap-6 items-start">
-
-          {/* Collapsible sidebar */}
-          <aside
-            className="flex-shrink-0 overflow-hidden transition-all duration-300 ease-in-out"
-            style={{ width: sidebarOpen ? '288px' : '0px', opacity: sidebarOpen ? 1 : 0 }}
-          >
-            <div className="w-72 sticky top-6">
-              <FilterPanel
-                scanMode={scanMode}
-                onModeChange={handleModeChange}
-                filters={priceFilters}
-                onFiltersChange={setPriceFilters}
-                rsFilters={rsFilters}
-                onRsFiltersChange={setRsFilters}
-                onScan={handleScan}
-                scanning={scanning}
-                resultCount={resultCount}
-              />
-            </div>
-          </aside>
-
-          {/* Results area */}
-          <main className="flex-1 min-w-0">
-            {/* Toolbar row */}
-            <div className="flex items-center gap-3 mb-4">
-              <button
-                onClick={() => setSidebarOpen(o => !o)}
-                className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[#2d2d45]
-                  bg-[#13131f] text-slate-400 hover:text-slate-200 hover:border-violet-500/50
-                  text-xs font-medium transition-colors flex-shrink-0"
-                title={sidebarOpen ? 'Hide filters' : 'Show filters'}
-              >
-                {sidebarOpen
-                  ? <><PanelLeftClose size={14} /> Hide Filters</>
-                  : <><PanelLeftOpen size={14} /> Show Filters</>
-                }
-              </button>
-
-              {/* Quick re-scan button when sidebar is hidden */}
-              {!sidebarOpen && (
+      {/* Scanner main layout: Price EMA / Rel. Strength / Rating Screener */}
+      {topNav === 'scanner' && (
+        <>
+          {/* Mode switcher — Rating Screener lives here as a third tab */}
+          <div className="max-w-7xl mx-auto px-4 pt-6">
+            <div className="flex items-center gap-1 bg-[#13131f] border border-[#1e1e30] rounded-xl p-1 w-fit">
+              {SCAN_MODE_TABS.map(tab => (
                 <button
-                  onClick={handleScan}
-                  disabled={scanning}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-lg
-                    bg-violet-600 hover:bg-violet-500 disabled:opacity-60
-                    text-white text-xs font-semibold transition-colors flex-shrink-0"
+                  key={tab.key}
+                  onClick={() => handleModeChange(tab.key)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all
+                    ${scanMode === tab.key
+                      ? 'bg-violet-600 text-white shadow'
+                      : 'text-slate-400 hover:text-slate-200'
+                    }`}
                 >
-                  {scanning
-                    ? <><div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Scanning...</>
-                    : <><SlidersHorizontal size={13} /> Re-scan</>
-                  }
+                  {tab.label}
                 </button>
-              )}
+              ))}
             </div>
+          </div>
 
-            {error && (
-              <div className="mb-4 p-4 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-400 text-sm">
-                <strong>Error:</strong> {error}
+          {scanMode === 'rating' ? (
+            <RatingScreener watchlist={watchlist} />
+          ) : (
+            <div className="max-w-7xl mx-auto px-4 pb-6">
+              <div className="flex gap-6 items-start">
+
+                {/* Collapsible sidebar */}
+                <aside
+                  className="flex-shrink-0 overflow-hidden transition-all duration-300 ease-in-out"
+                  style={{ width: sidebarOpen ? '288px' : '0px', opacity: sidebarOpen ? 1 : 0 }}
+                >
+                  <div className="w-72 sticky top-6">
+                    <FilterPanel
+                      scanMode={scanMode}
+                      filters={priceFilters}
+                      onFiltersChange={setPriceFilters}
+                      rsFilters={rsFilters}
+                      onRsFiltersChange={setRsFilters}
+                      onScan={handleScan}
+                      scanning={scanning}
+                      resultCount={resultCount}
+                    />
+                  </div>
+                </aside>
+
+                {/* Results area */}
+                <main className="flex-1 min-w-0">
+                  {/* Toolbar row */}
+                  <div className="flex items-center gap-3 mb-4">
+                    <button
+                      onClick={() => setSidebarOpen(o => !o)}
+                      className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-[#2d2d45]
+                        bg-[#13131f] text-slate-400 hover:text-slate-200 hover:border-violet-500/50
+                        text-xs font-medium transition-colors flex-shrink-0"
+                      title={sidebarOpen ? 'Hide filters' : 'Show filters'}
+                    >
+                      {sidebarOpen
+                        ? <><PanelLeftClose size={14} /> Hide Filters</>
+                        : <><PanelLeftOpen size={14} /> Show Filters</>
+                      }
+                    </button>
+
+                    {/* Quick re-scan button when sidebar is hidden */}
+                    {!sidebarOpen && (
+                      <button
+                        onClick={handleScan}
+                        disabled={scanning}
+                        className="flex items-center gap-2 px-3 py-1.5 rounded-lg
+                          bg-violet-600 hover:bg-violet-500 disabled:opacity-60
+                          text-white text-xs font-semibold transition-colors flex-shrink-0"
+                      >
+                        {scanning
+                          ? <><div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Scanning...</>
+                          : <><SlidersHorizontal size={13} /> Re-scan</>
+                        }
+                      </button>
+                    )}
+                  </div>
+
+                  {error && (
+                    <div className="mb-4 p-4 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-400 text-sm">
+                      <strong>Error:</strong> {error}
+                    </div>
+                  )}
+
+                  {hasScanned && !scanning && noData.length > 0 && (
+                    <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-400 text-xs">
+                      <strong>{noData.length}</strong> symbol{noData.length > 1 ? 's' : ''} could not be fetched and {noData.length > 1 ? 'were' : 'was'} excluded:{' '}
+                      <span className="text-amber-300 font-mono">{noData.join(', ')}</span>
+                    </div>
+                  )}
+
+                  {!hasScanned && !scanning && (
+                    <EmptyState scanMode={scanMode} />
+                  )}
+
+                  {scanning && <ScanningSpinner />}
+
+                  {hasScanned && !scanning && scanMode === 'price' && (
+                    <ResultsTable
+                      results={priceResults}
+                      scanned={scanned}
+                      onRowClick={(row, idx) => openStock(row, idx)}
+                      watchlist={watchlist}
+                    />
+                  )}
+
+                  {hasScanned && !scanning && scanMode === 'rs' && (
+                    <RSResultsTable
+                      results={rsResults}
+                      scanned={scanned}
+                      hasPriceFilter={rsFilters.enablePriceFilter}
+                      priceEmaPeriod={rsFilters.enablePriceFilter ? rsFilters.priceEmaPeriod : rsFilters.emaPeriod}
+                      ratioEmaPeriod={rsFilters.emaPeriod}
+                      onRowClick={(row, idx) => openStock(row, idx)}
+                      watchlist={watchlist}
+                    />
+                  )}
+                </main>
               </div>
-            )}
-
-            {hasScanned && !scanning && noData.length > 0 && (
-              <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-400 text-xs">
-                <strong>{noData.length}</strong> symbol{noData.length > 1 ? 's' : ''} could not be fetched and {noData.length > 1 ? 'were' : 'was'} excluded:{' '}
-                <span className="text-amber-300 font-mono">{noData.join(', ')}</span>
-              </div>
-            )}
-
-            {!hasScanned && !scanning && (
-              <EmptyState scanMode={scanMode} />
-            )}
-
-            {scanning && <ScanningSpinner />}
-
-            {hasScanned && !scanning && scanMode === 'price' && (
-              <ResultsTable
-                results={priceResults}
-                scanned={scanned}
-                onRowClick={(row, idx) => openStock(row, idx)}
-                watchlist={watchlist}
-              />
-            )}
-
-            {hasScanned && !scanning && scanMode === 'rs' && (
-              <RSResultsTable
-                results={rsResults}
-                scanned={scanned}
-                hasPriceFilter={rsFilters.enablePriceFilter}
-                priceEmaPeriod={rsFilters.enablePriceFilter ? rsFilters.priceEmaPeriod : rsFilters.emaPeriod}
-                ratioEmaPeriod={rsFilters.emaPeriod}
-                onRowClick={(row, idx) => openStock(row, idx)}
-                watchlist={watchlist}
-              />
-            )}
-          </main>
-        </div>
-      </div>}
+            </div>
+          )}
+        </>
+      )}
     </div>
 
     {showEmailConfig && (

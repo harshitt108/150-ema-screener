@@ -11,7 +11,7 @@ from scanner import scan_stocks, calculate_ema, calculate_avg_volume, TIMEFRAME_
 from rs_scanner import scan_rs_stocks, BENCHMARK_NAMES, BENCHMARK_MAP, _compute_ratio, _normalize_index, _rs_trend
 from data_fetcher import fetch_ohlcv, SESSION
 from indicators import compute_signals, compute_mtf_snapshot, compute_signal_history, compute_rating_history, rsi as calc_rsi
-from index_scanner import resolve_yahoo_symbol
+from index_scanner import fetch_chart_ohlcv
 from database import init_db
 from portfolio_routes import router as portfolio_router
 from monitoring_routes import router as monitoring_router
@@ -217,7 +217,7 @@ def get_chart(symbol: str, timeframe: str = "daily", benchmark: str = "NIFTY 50"
     interval, _scan_period = TIMEFRAME_MAP[timeframe]
     # Use the chart's own (longer) range so the panel shows more history
     period = _CHART_RANGE.get(timeframe, _scan_period)
-    df = fetch_ohlcv(resolve_yahoo_symbol(symbol), interval, period)
+    df = fetch_chart_ohlcv(symbol, interval, period)
     if df is None or len(df) < 20:
         raise HTTPException(status_code=404, detail=f"No data for {symbol}")
 
@@ -402,7 +402,7 @@ def get_signals(symbol: str, timeframe: str = "daily", benchmark: str = "NIFTY 5
     if timeframe not in TIMEFRAME_MAP:
         raise HTTPException(status_code=400, detail=f"Unknown timeframe: {timeframe}")
     interval, period = TIMEFRAME_MAP[timeframe]
-    df = fetch_ohlcv(resolve_yahoo_symbol(symbol), interval, period)
+    df = fetch_chart_ohlcv(symbol, interval, period)
     if df is None or len(df) < 30:
         raise HTTPException(status_code=404, detail=f"No data for {symbol}")
 
@@ -433,7 +433,7 @@ def mtf_matrix(symbol: str, benchmark: str = "NIFTY 50"):
     def build_column(tf):
         interval, scan_period = TIMEFRAME_MAP[tf]
         period = _CHART_RANGE.get(tf, scan_period)
-        df = fetch_ohlcv(resolve_yahoo_symbol(symbol), interval, period)
+        df = fetch_chart_ohlcv(symbol, interval, period)
         if df is None or len(df) < 30:
             return {"timeframe": tf, "label": _MTF_LABELS[tf], "available": False}
 
@@ -482,7 +482,7 @@ def signal_history(symbol: str, timeframe: str = "daily", benchmark: str = "NIFT
         raise HTTPException(status_code=400, detail=f"Unknown timeframe: {timeframe}")
     interval, scan_period = TIMEFRAME_MAP[timeframe]
     period = _CHART_RANGE.get(timeframe, scan_period)
-    df = fetch_ohlcv(resolve_yahoo_symbol(symbol), interval, period)
+    df = fetch_chart_ohlcv(symbol, interval, period)
     if df is None or len(df) < 30:
         raise HTTPException(status_code=404, detail=f"No data for {symbol}")
 
@@ -505,7 +505,7 @@ def rating_history(symbol: str, timeframe: str = "daily", benchmark: str = "NIFT
         raise HTTPException(status_code=400, detail=f"Unknown timeframe: {timeframe}")
     interval, scan_period = TIMEFRAME_MAP[timeframe]
     period = _CHART_RANGE.get(timeframe, scan_period)
-    df = fetch_ohlcv(resolve_yahoo_symbol(symbol), interval, period)
+    df = fetch_chart_ohlcv(symbol, interval, period)
     if df is None or len(df) < 30:
         raise HTTPException(status_code=404, detail=f"No data for {symbol}")
 
@@ -636,7 +636,7 @@ def compare_snapshot(symbol: str, timeframe: str = "daily", benchmark: str = "NI
         raise HTTPException(status_code=400, detail=f"Unknown timeframe: {timeframe}")
     interval, scan_period = TIMEFRAME_MAP[timeframe]
     period = _CHART_RANGE.get(timeframe, scan_period)
-    df = fetch_ohlcv(resolve_yahoo_symbol(symbol), interval, period)
+    df = fetch_chart_ohlcv(symbol, interval, period)
     if df is None or len(df) < 30:
         raise HTTPException(status_code=404, detail=f"No data for {symbol}")
 

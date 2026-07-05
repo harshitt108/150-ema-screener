@@ -376,7 +376,7 @@ function RSFilters({ filters, onChange }) {
 // ─── Main FilterPanel ───────────────────────────────────────────────────────
 
 export default function FilterPanel({
-  scanMode, onModeChange,
+  scanMode,
   filters, onFiltersChange,
   rsFilters, onRsFiltersChange,
   onScan, scanning, resultCount,
@@ -393,25 +393,6 @@ export default function FilterPanel({
       <div className="flex items-center gap-2">
         <div className="w-2 h-2 rounded-full bg-violet-500" />
         <h2 className="text-sm font-semibold text-slate-300 tracking-wide uppercase">Scanner Filters</h2>
-      </div>
-
-      {/* Mode tabs */}
-      <div className="flex rounded-lg overflow-hidden border border-[#2d2d45] text-xs font-semibold">
-        {[
-          { key: 'price', label: 'Price EMA' },
-          { key: 'rs',    label: 'Rel. Strength' },
-        ].map(tab => (
-          <button
-            key={tab.key}
-            onClick={() => onModeChange(tab.key)}
-            className={`flex-1 py-2 transition-colors
-              ${scanMode === tab.key
-                ? 'bg-violet-600 text-white'
-                : 'bg-[#1a1a2e] text-slate-500 hover:text-slate-300'}`}
-          >
-            {tab.label}
-          </button>
-        ))}
       </div>
 
       {/* Universe (shared) */}
