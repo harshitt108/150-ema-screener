@@ -83,18 +83,34 @@ const ToolIcon = ({ id, size = 16, color = 'currentColor' }) => {
 }
 
 const TOOLS = [
-  { id: 'cursor',    label: 'Cursor — select & move drawings' },
+  { id: 'cursor',    label: 'Cursor — select & move drawings  ·  hold Shift + drag anywhere to measure' },
   null,
-  { id: 'trendline', label: 'Trend Line — click-drag (or 2 clicks)' },
-  { id: 'hline',     label: 'Horizontal Line — click' },
-  { id: 'vline',     label: 'Vertical Line — click' },
-  { id: 'channel',   label: 'Parallel Channel — 3 clicks' },
+  { id: 'trendline', label: 'Trend Line — click-drag (or 2 clicks)  (Option+T)' },
+  { id: 'hline',     label: 'Horizontal Line — click  (Option+H)' },
+  { id: 'vline',     label: 'Vertical Line — click  (Option+V)' },
+  { id: 'channel',   label: 'Parallel Channel — 3 clicks  (Option+P)' },
   null,
   { id: 'long',      label: 'Long Position — click-drag (or 2 clicks)' },
   { id: 'short',     label: 'Short Position — click-drag (or 2 clicks)' },
   null,
   { id: 'text',      label: 'Text — click to place' },
 ]
+
+// Alt/Option + letter → tool, matching TradingView's own shortcuts. Keyed by
+// e.code (physical key), NOT e.key — macOS remaps Option+letter to accented/
+// symbol characters (Option+V types "√"), so e.key would never see "v".
+const ALT_SHORTCUTS = { KeyV: 'vline', KeyH: 'hline', KeyP: 'channel', KeyT: 'trendline' }
+
+// "1d 4h", "3h 20m", "45m" — for the Shift-drag measure tool's time readout.
+const fmtDuration = (sec) => {
+  sec = Math.round(Math.abs(sec))
+  const d = Math.floor(sec / 86400)
+  const h = Math.floor((sec % 86400) / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  if (d > 0) return `${d}d${h ? ` ${h}h` : ''}`
+  if (h > 0) return `${h}h${m ? ` ${m}m` : ''}`
+  return `${m}m`
+}
 
 // One-line guidance shown while a tool is active
 const HINTS = {
@@ -124,6 +140,7 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
   const [hover,   setHover]   = useState(null)  // pointer {x,y} for previews
   const [textPos, setTextPos] = useState(null)
   const [textVal, setTextVal] = useState('')
+  const [measure,  setMeasure]  = useState(null) // Shift-drag ruler { p1, p2 } — ephemeral, not persisted
   const [, force]             = useState(0)     // redraw on chart pan/zoom
 
   const actionRef = useRef(null)   // active drag gesture
@@ -140,7 +157,7 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
   useEffect(() => {
     hydratingRef.current = true
     keyRef.current = storageKey
-    setSelectedId(null); setPending(null); setDraft(null); setClicks([])
+    setSelectedId(null); setPending(null); setDraft(null); setClicks([]); setMeasure(null)
     if (!storageKey) { setDrawings([]); hydratingRef.current = false; return }
     try {
       const raw = localStorage.getItem(STORE_PREFIX + storageKey)
@@ -382,6 +399,16 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
   }
   const logicalAtX = x => { try { return chartApiRef.current?.chart.timeScale().coordinateToLogical(x) } catch { return null } }
 
+  // Width of the native right-axis price-scale gutter for a pane — the column
+  // lightweight-charts reserves for ITS OWN labels (150/50/20 EMA, MACD,
+  // Ratio, live price). Our SVG overlay sits in a z-index ABOVE that canvas,
+  // so anything we draw inside this column would permanently hide those
+  // labels rather than just overlap them. Used to keep our own price tags
+  // (hline) clear of that reserved space entirely.
+  const priceScaleWidth = (pane = 0) => {
+    try { return seriesForPane(pane)?.priceScale()?.width() ?? 0 } catch { return 0 }
+  }
+
   // Resolve a logical index to the time of the nearest candle. Candle indices
   // map 1:1 to logical indices; a fractional/out-of-range logical snaps to the
   // closest bar (matches TradingView's vertical-line date snapping).
@@ -502,6 +529,9 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
       if (data) applyHandle(a.id, a.handle, data)
     } else if (a.kind === 'body') {
       applyBody(a, xy)
+    } else if (a.kind === 'measure') {
+      const data = toData(xy)
+      setMeasure(m => m ? { ...m, p2: { ...xy, ...(data || {}) } } : m)
     }
   }
 
@@ -523,6 +553,12 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
         // treated as a click → wait for a second click to complete
         setPending({ ...a.p1 }); setDraft(null)
       }
+    } else if (a.kind === 'measure') {
+      // A near-zero drag has nothing useful to show — clear it. A real drag's
+      // result stays on screen (like TradingView's ruler) until Escape, a new
+      // Shift-drag, or a symbol switch clears it.
+      const xy = wrapCoords(e)
+      if (px(a.p1.x, a.p1.y, xy.x, xy.y) <= 5) setMeasure(null)
     }
   }
 
@@ -585,6 +621,22 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
   const onSurfaceMove = e => setHover(wrapCoords(e))
   const onSurfaceLeave = () => setHover(null)
 
+  // ── Shift+drag measure (TradingView-style ruler) ───────────────────────────
+  // Works regardless of the active tool, so it's bound on the CAPTURE phase of
+  // the outer wrapper — this fires before both the drawing surface's own
+  // onPointerDown and lightweight-charts' native pan/zoom listener on the
+  // canvas beneath it, so stopPropagation() here cleanly pre-empts either.
+  const onWrapPointerDownCapture = e => {
+    if (!e.shiftKey || e.button !== 0) return
+    if (e.target.closest?.('[data-ui]')) return   // toolbar / text input — not chart surface
+    const xy = wrapCoords(e)
+    const data = toData(xy)
+    if (!data) return
+    e.preventDefault(); e.stopPropagation()
+    setMeasure({ p1: { ...xy, ...data }, p2: { ...xy, ...data } })
+    startAction({ kind: 'measure', p1: { ...xy, ...data } })
+  }
+
   // ── Edit gestures (cursor mode) ────────────────────────────────────────────
   const onHandleDown = (e, id, handle) => {
     e.stopPropagation(); e.preventDefault()
@@ -603,10 +655,18 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
   useEffect(() => {
     const h = e => {
       if (e.key === 'Escape') {
-        setClicks([]); setPending(null); setDraft(null); setTool('cursor'); setTextPos(null); setSelectedId(null)
+        setClicks([]); setPending(null); setDraft(null); setTool('cursor'); setTextPos(null); setSelectedId(null); setMeasure(null)
       }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId != null && !textPos) {
         e.preventDefault(); del(selectedId)
+      }
+      // TradingView-style tool shortcuts (Alt/Option + letter). Skip while
+      // typing in the text-drawing input or any other editable field.
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !textPos) {
+        const el = e.target
+        const isEditable = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)
+        const next = !isEditable && ALT_SHORTCUTS[e.code]
+        if (next) { e.preventDefault(); setClicks([]); setPending(null); setTool(t => t === next ? 'cursor' : next) }
       }
     }
     window.addEventListener('keydown', h)
@@ -667,16 +727,28 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
         // Indicator-pane values (ratio ≈ 0.0098, MACD ≈ -0.04) round to "0.00"
         // at 2dp — widen the precision for sub-1 magnitudes so the tag is real.
         const lbl = d.price.toLocaleString('en-IN', { maximumFractionDigits: Math.abs(d.price) < 1 ? 5 : 2 })
+        // Keep our tag clear of the native last-value labels (150 EMA / 50 EMA /
+        // 20 EMA / MACD / Signal / Ratio / live price) — our SVG sits in a layer
+        // above that canvas, so anything drawn there permanently HIDES those
+        // labels rather than just overlapping them. Those labels aren't confined
+        // to the narrow axis gutter: a combined "150 EMA  1378.33" badge measured
+        // ~60px wider than the gutter itself, extending that far into the plot
+        // area — so the clearance has to cover the gutter PLUS that overhang,
+        // not just the gutter (the line itself still crosses underneath; a thin
+        // line under text is harmless, only a solid tag box actually hides it).
+        const NATIVE_LABEL_OVERHANG = 70
+        const tagW = 58
+        const tagX = Math.max(4, W - priceScaleWidth(d.pane) - NATIVE_LABEL_OVERHANG - tagW)
         return (
           <g key={d.id} {...hoverProps(d.id)}>
             <line x1={0} y1={y} x2="100%" y2={y} stroke={d.color} strokeWidth={1.5} style={{ pointerEvents: 'none' }}/>
             {interactive &&
               <line x1={0} y1={y} x2="100%" y2={y} stroke="transparent" strokeWidth={12}
                 style={{ pointerEvents: 'stroke', cursor: 'ns-resize' }} onPointerDown={e => onBodyDown(e, d.id)} />}
-            <rect x={W - 66} y={y - 10} width={58} height={19} rx={3} fill={d.color} style={{ pointerEvents: 'none' }}/>
-            <text x={W - 37} y={y + 5} textAnchor="middle" fill="#fff" fontSize={10} style={{ pointerEvents: 'none', userSelect: 'none' }}>{lbl}</text>
+            <rect x={tagX} y={y - 10} width={tagW} height={19} rx={3} fill={d.color} style={{ pointerEvents: 'none' }}/>
+            <text x={tagX + tagW / 2} y={y + 5} textAnchor="middle" fill="#fff" fontSize={10} style={{ pointerEvents: 'none', userSelect: 'none' }}>{lbl}</text>
             {show && <Handle x={70} y={y} id={d.id} handle="price" cursor="ns-resize"/>}
-            {showDel && <DelBtn x={W - 84} y={y} id={d.id}/>}
+            {showDel && <DelBtn x={tagX - 18} y={y} id={d.id}/>}
           </g>
         )
       }
@@ -805,6 +877,45 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
     )
   }
 
+  // ── Shift-drag measure ruler (profit/loss between two points) ─────────────
+  const renderMeasure = () => {
+    if (!measure) return null
+    const { p1, p2 } = measure
+    if (p1?.price == null || p2?.price == null) return null
+
+    const diff = p2.price - p1.price
+    const pct  = p1.price !== 0 ? (diff / p1.price) * 100 : 0
+    const up   = diff >= 0
+    const fill = up ? '#16a34a' : '#dc2626'
+    const digits = Math.abs(p1.price) < 1 ? 5 : 2
+
+    const left  = Math.min(p1.x, p2.x), right = Math.max(p1.x, p2.x)
+    const top   = Math.min(p1.y, p2.y), bot   = Math.max(p1.y, p2.y)
+
+    const bars = (isNum(p1.logical) && isNum(p2.logical)) ? Math.round(Math.abs(p2.logical - p1.logical)) : null
+    const dur  = (isNum(p1.t) && isNum(p2.t)) ? fmtDuration(p2.t - p1.t) : null
+
+    const priceLbl = `${diff >= 0 ? '+' : ''}${diff.toFixed(digits)} (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)`
+    const metaLbl  = [bars != null ? `${bars} bar${bars === 1 ? '' : 's'}` : null, dur].filter(Boolean).join('  ·  ')
+
+    const boxW = Math.max(priceLbl.length * 6.2, metaLbl.length * 5.6) + 16
+    const boxX = Math.max(4, Math.min(W - boxW - 4, p2.x - boxW / 2))
+    const boxY = Math.max(4, Math.min(top, bot) - 40)
+
+    return (
+      <g style={{ pointerEvents: 'none' }}>
+        <rect x={left} y={top} width={Math.max(right - left, 1)} height={Math.max(bot - top, 1)}
+          fill={fill} opacity={0.12} stroke={fill} strokeOpacity={0.65} strokeDasharray="4 3" rx={2}/>
+        <line x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y} stroke={fill} strokeWidth={1.5} strokeDasharray="4 3"/>
+        <circle cx={p1.x} cy={p1.y} r={3.5} fill={fill}/>
+        <circle cx={p2.x} cy={p2.y} r={3.5} fill={fill}/>
+        <rect x={boxX} y={boxY} width={boxW} height={metaLbl ? 34 : 20} rx={4} fill={fill}/>
+        <text x={boxX + boxW / 2} y={boxY + 14} textAnchor="middle" fill="#fff" fontSize={11} fontWeight={700} style={{ userSelect: 'none' }}>{priceLbl}</text>
+        {metaLbl && <text x={boxX + boxW / 2} y={boxY + 27} textAnchor="middle" fill="#fff" fontSize={9.5} opacity={0.9} style={{ userSelect: 'none' }}>{metaLbl}</text>}
+      </g>
+    )
+  }
+
   // ── Live preview while creating ────────────────────────────────────────────
   const renderPreview = () => {
     const dash = '5 4'
@@ -858,7 +969,7 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
   const hintText  = Array.isArray(rawHint) ? rawHint[clicks.length] : rawHint
 
   return (
-    <div ref={wrapRef} className="relative w-full h-full">
+    <div ref={wrapRef} className="relative w-full h-full" onPointerDownCapture={onWrapPointerDownCapture}>
       {children}
 
       {/* SVG overlay — sits above the lightweight-charts canvas */}
@@ -867,6 +978,7 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
 
         <g style={{ pointerEvents: 'none' }}>
           {renderPreview()}
+          {renderMeasure()}
           {clicks.map((c, i) => <circle key={i} cx={c.x} cy={c.y} r={4} fill={color} opacity={0.85}/>)}
         </g>
 
@@ -879,7 +991,7 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
       </svg>
 
       {/* Floating toolbar */}
-      <div style={{ position: 'absolute', top: 8, left: 8, zIndex: 1001 }}
+      <div data-ui="true" style={{ position: 'absolute', top: 8, left: 8, zIndex: 1001 }}
         className="flex items-center gap-0.5 bg-white/96 backdrop-blur border border-gray-200 rounded-xl shadow-md px-1.5 py-1.5">
         {TOOLS.map((t, i) => {
           if (t === null) return <div key={i} className="w-px h-5 bg-gray-200 mx-0.5"/>
@@ -927,7 +1039,7 @@ export default function DrawingOverlay({ chartApiRef, chartVersion, storageKey, 
 
       {/* Text input */}
       {textPos && (
-        <div style={{ position: 'absolute', left: Math.min(textPos.x + 4, (wrapRef.current?.clientWidth || 800) - 220), top: textPos.y - 22, zIndex: 1002,
+        <div data-ui="true" style={{ position: 'absolute', left: Math.min(textPos.x + 4, (wrapRef.current?.clientWidth || 800) - 220), top: textPos.y - 22, zIndex: 1002,
           background: 'white', border: '1px solid #8b5cf6', borderRadius: 8, boxShadow: '0 4px 16px rgba(0,0,0,0.15)' }}>
           <input autoFocus value={textVal} onChange={e => setTextVal(e.target.value)}
             onKeyDown={e => {

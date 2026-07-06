@@ -72,12 +72,13 @@ export default function CandleChart({
       const addLine = (data, style, pane = MAIN_PANE) => {
         if (!data?.length) return
         const s = chart.addSeries(LineSeries, {
-          color:            style.color,
-          lineWidth:        style.lineWidth,
-          lineStyle:        style.lineStyle ?? LineStyle.Solid,
-          title:            style.title,
-          priceLineVisible: false,
-          lastValueVisible: true,
+          color:                 style.color,
+          lineWidth:             style.lineWidth,
+          lineStyle:             style.lineStyle ?? LineStyle.Solid,
+          title:                 style.title,
+          priceLineVisible:      false,
+          lastValueVisible:      true,
+          crosshairMarkerVisible: false,
         }, pane)
         s.setData(data)
       }
@@ -108,12 +109,13 @@ export default function CandleChart({
 
         if (macdLine?.length) {
           const ml = chart.addSeries(LineSeries, {
-            color:            '#2196F3',
-            lineWidth:        1.5,
-            title:            'MACD',
-            priceLineVisible: false,
-            lastValueVisible: true,
-            priceFormat:      macdFmt,
+            color:                  '#2196F3',
+            lineWidth:              1.5,
+            title:                  'MACD',
+            priceLineVisible:       false,
+            lastValueVisible:       true,
+            crosshairMarkerVisible: false,
+            priceFormat:            macdFmt,
           }, MACD_PANE)
           ml.setData(macdLine)
           macdSeriesRef = ml   // ← ref for drawing overlay
@@ -121,12 +123,13 @@ export default function CandleChart({
 
         if (macdSignal?.length) {
           const sl = chart.addSeries(LineSeries, {
-            color:            '#FF9800',
-            lineWidth:        1.5,
-            title:            'Signal',
-            priceLineVisible: false,
-            lastValueVisible: true,
-            priceFormat:      macdFmt,
+            color:                  '#FF9800',
+            lineWidth:              1.5,
+            title:                  'Signal',
+            priceLineVisible:       false,
+            lastValueVisible:       true,
+            crosshairMarkerVisible: false,
+            priceFormat:            macdFmt,
           }, MACD_PANE)
           sl.setData(macdSignal)
           if (!macdSeriesRef) macdSeriesRef = sl
@@ -145,13 +148,14 @@ export default function CandleChart({
         const addRatioLine = (data, style) => {
           if (!data?.length) return null
           const s = chart.addSeries(LineSeries, {
-            color:            style.color,
-            lineWidth:        style.lineWidth,
-            lineStyle:        style.lineStyle ?? LineStyle.Solid,
-            title:            style.title,
-            priceLineVisible: false,
-            lastValueVisible: true,
-            priceFormat:      ratioFmt,
+            color:                 style.color,
+            lineWidth:             style.lineWidth,
+            lineStyle:             style.lineStyle ?? LineStyle.Solid,
+            title:                 style.title,
+            priceLineVisible:      false,
+            lastValueVisible:      true,
+            crosshairMarkerVisible: false,
+            priceFormat:           ratioFmt,
           }, RATIO_PANE)
           s.setData(data)
           return s
@@ -160,6 +164,18 @@ export default function CandleChart({
         addRatioLine(ratioEma20,  RATIO_STYLE.ema20)
         addRatioLine(ratioEma150, RATIO_STYLE.ema150)
       }
+
+      // ── Lock every pane's price scale after its initial auto-fit ───────
+      // lightweight-charts defaults each price scale to autoScale:true, which
+      // continuously re-fits the vertical range to visible data — this is the
+      // "Auto (fits data to screen)" option in the price-scale right-click
+      // menu. It fights with manually dragging the scale or a drawing, so we
+      // let the initial setData() above compute a sensible starting range
+      // (autoScale still on at that point), then freeze it — same effect as
+      // unchecking "Auto" on every pane, applied by default everywhere.
+      candleSeries.priceScale().applyOptions({ autoScale: false })
+      if (macdSeriesRef)  macdSeriesRef.priceScale().applyOptions({ autoScale: false })
+      if (ratioSeriesRef) ratioSeriesRef.priceScale().applyOptions({ autoScale: false })
 
       // Expose chart API + per-pane series refs for the drawing overlay.
       // The overlay uses each pane's own series for coordinate conversion so

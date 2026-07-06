@@ -86,20 +86,16 @@ def fetch_ohlcv(symbol: str, interval: str, period: str,
             "Volume": volumes,
         }, index=pd.to_datetime(timestamps, unit="s", utc=True))
 
-        # Split/dividend adjustment: Yahoo gives an adjusted close but RAW OHL.
-        # Mixing them makes every candle render red (adj close < raw open) and
-        # distorts the wicks. Scale Open/High/Low by the same per-bar factor
-        # (adjclose / close) so the whole candle is consistently adjusted.
-        adjclose_data = result["indicators"].get("adjclose")
-        if adjclose_data:
-            df["AdjClose"] = adjclose_data[0].get("adjclose", closes)
-            factor = df["AdjClose"] / df["Close"]
-            factor = factor.replace([float("inf"), float("-inf")], 1.0).fillna(1.0)
-            df["Open"]  = df["Open"]  * factor
-            df["High"]  = df["High"]  * factor
-            df["Low"]   = df["Low"]   * factor
-            df["Close"] = df["AdjClose"]
-            df = df.drop(columns=["AdjClose"])
+        # NOTE: Yahoo's `adjclose` field is adjusted for BOTH splits and cash
+        # dividends. Its raw Open/High/Low/Close are already split-adjusted
+        # (continuous across bonus/split events) but NOT dividend-adjusted —
+        # which is exactly the convention TradingView/Zerodha use by default,
+        # and what NSE's own bhavcopy reports. Previously we overwrote Close
+        # with `adjclose` and rescaled Open/High/Low to match, which quietly
+        # baked dividend adjustments into every EMA/RSI/signal — e.g. HDFCBANK's
+        # 150 EMA came out ~₹13 below TradingView's because of ~₹26.5/share in
+        # trailing dividends. Using raw OHLC directly (no rescaling needed —
+        # all four fields are already mutually consistent) fixes this.
 
         # ── Backfill the current/forming bar's live price ─────────────────────
         # Yahoo often leaves the most-recent bar's `close` NULL while the session
